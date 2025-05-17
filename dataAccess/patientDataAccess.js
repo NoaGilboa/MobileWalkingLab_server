@@ -67,8 +67,13 @@ class PatientDataAccess {
             const pool = await sql.connect(dbConfig);
             const result = await pool.request()
                 .input('patient_id', sql.Int, patient_id)
-                .query("SELECT note FROM patient_notes WHERE patient_id = @patient_id;");
-            return result.recordset.map(row => row.note); // מחזיר מערך של ההערות
+                .query(`
+                    SELECT note, created_by_name, created_at
+                    FROM patient_notes
+                    WHERE patient_id = @patient_id
+                    ORDER BY created_at DESC
+                `);            
+                return result.recordset; // מחזיר מערך של ההערות
         } catch (error) {
             throw new Error(`Error retrieving patient notes: ${error.message}`);
         }
@@ -104,7 +109,7 @@ class PatientDataAccess {
             throw new Error(`Error adding note to patient: ${error.message}`);
         }
     }
-    
+
     static async updatePatient(id, patientData) {
         try {
             const pool = await sql.connect(dbConfig);
