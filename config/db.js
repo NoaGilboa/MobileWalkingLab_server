@@ -21,6 +21,7 @@ async function connectDB() {
             BEGIN
                 CREATE TABLE therapists (
                     id INT IDENTITY(1,1) PRIMARY KEY,
+                    therapist_id NVARCHAR(255) NOT NULL UNIQUE
                     name NVARCHAR(255) NOT NULL,
                     email NVARCHAR(255) NOT NULL UNIQUE,
                     password NVARCHAR(255) NOT NULL
@@ -34,10 +35,20 @@ async function connectDB() {
             BEGIN
                 CREATE TABLE patients (
                     id INT IDENTITY(1,1) PRIMARY KEY,
-                    userId NVARCHAR(255) NOT NULL UNIQUE,
-                    name NVARCHAR(255) NOT NULL,
-                    age INT,
-                    gender NVARCHAR(50)
+                    patient_id NVARCHAR(255) NOT NULL UNIQUE,
+                    first_name NVARCHAR(255) NOT NULL,
+                    last_name NVARCHAR(255) NOT NULL,
+                    birth_date DATE NOT NULL,
+                    age AS DATEDIFF(YEAR, birth_date, GETDATE()),
+                    gender NVARCHAR(50),
+                    weight FLOAT,
+                    height FLOAT,
+                    phone NVARCHAR(20),
+                    email NVARCHAR(255),
+                    medical_condition NVARCHAR(MAX),
+                    mobility_status NVARCHAR(100),
+                    created_at DATETIME DEFAULT GETDATE(),
+                    updated_at DATETIME
                 );
             END
         `);
@@ -48,9 +59,13 @@ async function connectDB() {
             BEGIN
                 CREATE TABLE patient_notes (
                     id INT IDENTITY(1,1) PRIMARY KEY,
-                    userId NVARCHAR(255) NOT NULL,
+                    patient_id INT NOT NULL,
+                    therapist_id INT NOT NULL,
+                    created_by_name NVARCHAR(255) NOT NULL,
                     note NVARCHAR(MAX),
-                    FOREIGN KEY (userId) REFERENCES patients(userId) ON DELETE CASCADE
+                    created_at DATETIME DEFAULT GETDATE(),
+                    FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+                    FOREIGN KEY (therapist_id) REFERENCES therapists(id) ON DELETE CASCADE
                 );
             END
         `);

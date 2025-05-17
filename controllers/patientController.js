@@ -17,9 +17,21 @@ router.get('/', async (req, res) => {
 // Add a new patient
 router.post('/', async (req, res) => {
     try {
-        const { userId, name, age, condition } = req.body;
-        const newPatient = await PatientService.addPatient({userId, name, age, condition });
-        res.status(201).json(newPatient);
+        const {
+            patient_id, first_name, last_name, birth_date, gender,
+            weight, height, phone, email, medical_condition, mobility_status
+        } = req.body;
+
+        const success = await PatientService.addPatient({
+            patient_id, first_name, last_name, birth_date, gender,
+            weight, height, phone, email, medical_condition, mobility_status
+        });
+
+        if (success) {
+            res.status(201).json({ message: 'Patient created successfully' });
+        } else {
+            res.status(400).json({ message: 'Failed to create patient' });
+        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -28,7 +40,7 @@ router.post('/', async (req, res) => {
 // Get details of a specific patient by ID
 router.get('/:userId', async (req, res) => {
     try {
-        const patient = await PatientService.getPatientById(req.params.userId);
+        const patient = await PatientService.getPatientById(req.params.id);
         if (patient) {
             res.json(patient);
         } else {
@@ -42,8 +54,7 @@ router.get('/:userId', async (req, res) => {
 // Get notes for a specific patient by userId
 router.get('/:userId/notes', async (req, res) => {
     try {
-          const patientId = req.params.userId;
-          const notes = await PatientService.getNotesByPatientId(patientId);
+          const notes = await PatientService.getNotesByPatientId(parseInt(req.params.id));
           if (notes) {
               res.json(notes);
           } else {
@@ -57,10 +68,42 @@ router.get('/:userId/notes', async (req, res) => {
 // Add a note for a specific patient by ID
 router.post('/:userId/notes', async (req, res) => {
     try {
-        const { note } = req.body;
-        const updatedPatient = await PatientService.addNoteToPatient(req.params.userId, note);
-        if (updatedPatient) {
-            res.status(201).json({ message: 'Note added successfully', updatedPatient });
+        const patientId = parseInt(req.params.id);
+        const { therapistId, note } = req.body;
+        const success = await PatientService.addNoteToPatient(patientId, therapistId, note);
+        if (success) {
+            res.status(201).json({ message: 'Note added successfully' });
+        } else {
+            res.status(404).json({ message: 'Failed to add note' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update patient
+router.put('/:id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const patientData = req.body;
+        const success = await PatientService.updatePatient(id, patientData);
+        if (success) {
+            res.json({ message: 'Patient updated successfully' });
+        } else {
+            res.status(404).json({ message: 'Patient not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Delete patient
+router.delete('/:id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const success = await PatientService.deletePatient(id);
+        if (success) {
+            res.json({ message: 'Patient deleted successfully' });
         } else {
             res.status(404).json({ message: 'Patient not found' });
         }
@@ -70,49 +113,3 @@ router.post('/:userId/notes', async (req, res) => {
 });
 
 module.exports = router;
-
-
-// const express = require('express');
-// const router = express.Router();
-// const PatientService = require('../services/patientService');
-
-// // Get all patients
-// router.get('/', (req, res) => {
-//   const patients = PatientService.getAllPatients();
-//   res.json(patients);
-// });
-
-// // Add a new patient
-// router.post('/', (req, res) => {
-//   const {id, name, age, condition } = req.body;
-//   const newPatient = PatientService.addPatient(id, name, age, condition);
-//   res.status(201).json(newPatient);
-// });
-
-// // Get details of a specific patient by ID
-// router.get('/:id', (req, res) => {
-//   const patientId = parseInt(req.params.id);
-//   const patient = PatientService.getPatientById(patientId);
-//   if (patient) {
-//     res.json(patient);
-//   } else {
-//     res.status(404).json({ message: 'Patient not found' });
-//   }
-// });
-
-// // Get notes for a specific patient by ID
-// router.get('/:id/notes', (req, res) => {
-//   const patientId = parseInt(req.params.id);
-//   const notes = PatientService.getNotesByPatientId(patientId);
-//   res.json(notes);
-// });
-
-// // Add a note for a specific patient by ID
-// router.post('/:id/notes', (req, res) => {
-//   const patientId = parseInt(req.params.id);
-//   const { note } = req.body;
-//   const addedNote = PatientService.addNoteToPatient(patientId, note);
-//   res.status(201).json({ message: 'Note added successfully', note: addedNote });
-// });
-
-// module.exports = router;

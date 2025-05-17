@@ -6,12 +6,13 @@ class TherapistDataAccess {
         try {
             const pool = await sql.connect(dbConfig);
             const result = await pool.request()
+                .input('therapist_id', sql.NVarChar, therapistData.therapist_id)
                 .input('name', sql.NVarChar, therapistData.name)
                 .input('email', sql.NVarChar, therapistData.email)
                 .input('password', sql.NVarChar, therapistData.password)
                 .query(`
-                    INSERT INTO therapists (name, email, password) 
-                    VALUES (@name, @email, @password);
+                    INSERT INTO therapists (therapist_id, name, email, password) 
+                    VALUES (@therapist_id, @name, @email, @password);
                 `);
             return result.rowsAffected[0] > 0;
         } catch (error) {
