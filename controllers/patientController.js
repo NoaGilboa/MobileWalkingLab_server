@@ -55,22 +55,23 @@ router.get('/:id', async (req, res) => {
 // Get notes for a specific patient by userId
 router.get('/:userId/notes', async (req, res) => {
     try {
-          const notes = await PatientService.getNotesByPatientId(parseInt(req.params.id));
-          if (notes) {
-              res.json(notes);
-          } else {
-              res.status(404).json({ message: 'Patient not found' });
-          }
+        const notes = await PatientService.getNotesByPatientId(parseInt(req.params.id));
+        if (notes) {
+            res.json(notes);
+        } else {
+            res.status(404).json({ message: 'Patient not found' });
+        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
 // Add a note for a specific patient by ID
-router.post('/:userId/notes', async (req, res) => {
+router.post('/:id/notes', async (req, res) => {
     try {
         const patientId = parseInt(req.params.id);
         const { therapistId, note } = req.body;
+        console.log('Request body:', req.body); 
         const success = await PatientService.addNoteToPatient(patientId, therapistId, note);
         if (success) {
             res.status(201).json({ message: 'Note added successfully' });

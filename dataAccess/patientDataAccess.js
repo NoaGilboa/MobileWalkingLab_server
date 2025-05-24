@@ -50,7 +50,7 @@ class PatientDataAccess {
 
     // קבלת מטופל לפי מזהה
     static async getPatientById(id) {
-    
+
         try {
             const pool = await sql.connect(dbConfig);
             const result = await pool.request()
@@ -73,21 +73,21 @@ class PatientDataAccess {
                     FROM patient_notes
                     WHERE patient_id = @patient_id
                     ORDER BY created_at DESC
-                `);            
-                return result.recordset; // מחזיר מערך של ההערות
+                `);
+            return result.recordset; // מחזיר מערך של ההערות
         } catch (error) {
             throw new Error(`Error retrieving patient notes: ${error.message}`);
         }
     }
 
     // הוספת הערה למטופל
-    static async addNoteToPatient(userId, note) {
+    static async addNoteToPatient(patientId, therapistId, note) {
         try {
             const pool = await sql.connect(dbConfig);
             // שלב 1 – שליפת שם הפיזיותרפיסט
             const therapistResult = await pool.request()
-                .input('therapist_id', sql.Int, therapistId)
-                .query("SELECT name FROM therapists WHERE id = @therapist_id;");
+                .input('therapistId', sql.Int, therapistId)
+                .query("SELECT name FROM therapists WHERE id = @therapistId;");
             const therapistName = therapistResult.recordset[0]?.name;
 
             if (!therapistName) {
@@ -107,7 +107,7 @@ class PatientDataAccess {
 
             return result.rowsAffected[0] > 0; // מחזיר true אם נוספה בהצלחה
         } catch (error) {
-            throw new Error(`Error adding note to patient: ${error.message}`);
+            throw new Error(`Error adding note to patient: ${error.message}, therapistId: ${therapistId}, patientId: ${patientId}`);
         }
     }
 
@@ -158,7 +158,7 @@ class PatientDataAccess {
         } catch (error) {
             throw new Error(`Error deleting patient: ${error.message}`);
         }
-    } 
+    }
 }
 
 
