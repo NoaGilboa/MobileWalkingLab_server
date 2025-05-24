@@ -50,6 +50,7 @@ class PatientDataAccess {
 
     // קבלת מטופל לפי מזהה
     static async getPatientById(id) {
+    
         try {
             const pool = await sql.connect(dbConfig);
             const result = await pool.request()
