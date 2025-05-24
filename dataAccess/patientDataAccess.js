@@ -107,7 +107,8 @@ class PatientDataAccess {
 
             return result.rowsAffected[0] > 0; // מחזיר true אם נוספה בהצלחה
         } catch (error) {
-            throw new Error(`Error adding note to patient: ${error.message}, therapistId: ${therapistId}, patientId: ${patientId}`);
+            console.error("1111Add note error:", error);
+            throw new Error(`Errorr adding note to patient: ${error.message}, therapistId: ${therapistId}, patientId: ${patientId}`);
         }
     }
 

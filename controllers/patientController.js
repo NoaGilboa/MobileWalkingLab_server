@@ -71,7 +71,7 @@ router.post('/:id/notes', async (req, res) => {
     try {
         const patientId = parseInt(req.params.id);
         const { therapistId, note } = req.body;
-        console.log('Request body:', req.body); 
+        console.log('Request body:', req.body);
         const success = await PatientService.addNoteToPatient(patientId, therapistId, note);
         if (success) {
             res.status(201).json({ message: 'Note added successfully' });
@@ -79,7 +79,8 @@ router.post('/:id/notes', async (req, res) => {
             res.status(404).json({ message: 'Failed to add note' });
         }
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.log('Request body:', req.body);
+        res.status(500).json({ errorr: error.message });
     }
 });
 
