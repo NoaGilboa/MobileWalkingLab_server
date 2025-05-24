@@ -53,7 +53,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // Get notes for a specific patient by userId
-router.get('/:userId/notes', async (req, res) => {
+router.get('/:id/notes', async (req, res) => {
     try {
         const notes = await PatientService.getNotesByPatientId(parseInt(req.params.id));
         if (notes) {
