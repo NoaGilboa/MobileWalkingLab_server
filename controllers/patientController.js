@@ -38,7 +38,7 @@ router.post('/', async (req, res) => {
 });
 
 // Get details of a specific patient by ID
-router.get('/:userId', async (req, res) => {
+router.get('/:id', async (req, res) => {
     try {
         const patient = await PatientService.getPatientById(req.params.id);
         if (patient) {
