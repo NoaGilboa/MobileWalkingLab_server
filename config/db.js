@@ -21,7 +21,7 @@ async function connectDB() {
             BEGIN
                 CREATE TABLE therapists (
                     id INT IDENTITY(1,1) PRIMARY KEY,
-                    therapist_id NVARCHAR(255) NOT NULL UNIQUE
+                    therapist_id NVARCHAR(255) NOT NULL UNIQUE,
                     name NVARCHAR(255) NOT NULL,
                     email NVARCHAR(255) NOT NULL UNIQUE,
                     password NVARCHAR(255) NOT NULL
@@ -85,7 +85,7 @@ async function connectDB() {
                 );
             END
         `);
-        console.log("Checked and created 'patient_notes' table if not exists");
+        console.log("Checked and created 'patient_speed_measurements' table if not exists");
 
     } catch (err) {
         console.error("Database connection failed:", err);
