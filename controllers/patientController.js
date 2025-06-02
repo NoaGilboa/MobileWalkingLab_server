@@ -118,7 +118,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 //
-router.get('/:id/get-treatment-recommendation', async (req, res) => {
+router.get('/:id/treatment-recommendation', async (req, res) => {
     try {
         const id = parseInt(req.params.id);
         const patient = await PatientService.getPatientById(id);
