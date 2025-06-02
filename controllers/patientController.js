@@ -3,6 +3,8 @@
 const express = require('express');
 const router = express.Router();
 const PatientService = require('../services/patientService');
+const { getTreatmentRecommendation } = require('../services/openAIService'); 
+
 
 // Get all patients
 router.get('/', async (req, res) => {
@@ -111,6 +113,31 @@ router.delete('/:id', async (req, res) => {
             res.status(404).json({ message: 'Patient not found' });
         }
     } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+//
+router.get('/:id/get-treatment-recommendation', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const patient = await PatientService.getPatientById(id);
+        const notes = await PatientService.getNotesByPatientId(id);
+
+        if (!patient) {
+            return res.status(404).json({ error: 'Patient not found' });
+        }
+
+        const data = {
+            age: patient.age || 50,
+            condition: patient.medical_condition || 'לא צוין',
+            notes: notes?.map(n => n.note) || []
+        };
+
+        const recommendation = await getTreatmentRecommendation(data);
+        res.json({ recommendation });
+    } catch (error) {
+        console.error("Error in recommendation route:", error);
         res.status(500).json({ error: error.message });
     }
 });
