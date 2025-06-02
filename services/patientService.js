@@ -30,6 +30,15 @@ class PatientService {
     static async deletePatient(id) {
         return await PatientDataAccess.deletePatient(id);
     }
+
+    static async saveSpeedMeasurement(patientId, speedKmh, source, footLiftCount) {
+    return await PatientDataAccess.saveSpeedMeasurement(patientId, speedKmh, source, footLiftCount);
+}
+
+static async getSpeedHistory(patientId) {
+    return await PatientDataAccess.getSpeedHistory(patientId);
+}
+
 }
 
 module.exports = PatientService;

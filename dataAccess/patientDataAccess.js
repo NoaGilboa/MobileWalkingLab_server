@@ -160,8 +160,37 @@ class PatientDataAccess {
             throw new Error(`Error deleting patient: ${error.message}`);
         }
     }
+
+
+// שמירת מדידת מהירות
+static async saveSpeedMeasurement(patientId, speedKmh, source = 'manual', footLiftCount = null) {
+    const pool = await sql.connect(dbConfig);
+    await pool.request()
+        .input('patient_id', sql.Int, patientId)
+        .input('speed_kmh', sql.Float, speedKmh)
+        .input('source', sql.NVarChar, source)
+        .input('foot_lift_count', sql.Int, footLiftCount)
+        .query(`
+            INSERT INTO patient_speed_measurements (patient_id, speed_kmh, source, foot_lift_count)
+            VALUES (@patient_id, @speed_kmh, @source, @foot_lift_count)
+        `);
+}
+
+// שליפת היסטוריית מהירויות
+static async getSpeedHistory(patientId) {
+    const pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+        .input('patient_id', sql.Int, patientId)
+        .query(`
+            SELECT speed_kmh, measured_at, source, foot_lift_count
+            FROM patient_speed_measurements
+            WHERE patient_id = @patient_id
+            ORDER BY measured_at DESC
+        `);
+    return result.recordset;
 }
 
 
+}
 
 module.exports = PatientDataAccess;

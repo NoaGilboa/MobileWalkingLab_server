@@ -71,6 +71,22 @@ async function connectDB() {
         `);
         console.log("Checked and created 'patient_notes' table if not exists");
 
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'patient_speed_measurements')
+            BEGIN
+                CREATE TABLE patient_speed_measurements (
+                    id INT IDENTITY(1,1) PRIMARY KEY,
+                    patient_id INT NOT NULL,
+                    speed_kmh FLOAT NOT NULL,
+                    measured_at DATETIME DEFAULT GETDATE(),
+                    source NVARCHAR(50) DEFAULT 'manual',
+                    foot_lift_count INT NULL,
+                    FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
+                );
+            END
+        `);
+        console.log("Checked and created 'patient_notes' table if not exists");
+
     } catch (err) {
         console.error("Database connection failed:", err);
     }

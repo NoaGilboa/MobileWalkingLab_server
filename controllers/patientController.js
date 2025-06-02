@@ -116,5 +116,27 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
+// שמירת מדידת מהירות
+router.post('/:id/speed', async (req, res) => {
+    try {
+        const { speed_kmh, source, foot_lift_count } = req.body;
+        await PatientService.saveSpeedMeasurement(parseInt(req.params.id), speed_kmh, source, foot_lift_count);
+        res.status(201).json({ message: 'Speed measurement saved' });
+    } catch (error) {
+        console.error("Error saving speed:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// שליפת היסטוריית מהירויות
+router.get('/:id/speed-history', async (req, res) => {
+    try {
+        const history = await PatientService.getSpeedHistory(parseInt(req.params.id));
+        res.json(history);
+    } catch (error) {
+        console.error("Error fetching speed history:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 module.exports = router;
