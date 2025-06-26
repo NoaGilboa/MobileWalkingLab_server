@@ -6,6 +6,7 @@ const cors = require('cors');
 const { connectDB } = require('./config/db');
 const patientController = require('./controllers/patientController');
 const therapistController = require('./controllers/therapistController');
+const deviceController = require('./controllers/deviceController');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -20,7 +21,8 @@ connectDB().then(() => {
     // Routes
     app.use('/api/patients', patientController);
     app.use('/api/therapists', therapistController);
-
+    app.use('/api/device', deviceController);
+    
     // Start the server
     app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
