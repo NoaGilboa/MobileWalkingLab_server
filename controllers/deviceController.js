@@ -23,6 +23,14 @@ router.post('/command', (req, res) => {
   res.json({ message: 'Command updated successfully' });
 });
 
+router.post('/data', (req, res) => {
+  const measurements = req.body;
+  console.log("📥 Received measurements:", measurements.length);
+  // Optional: Save to database here
+  res.json({ message: 'Measurements received', count: measurements.length });
+});
+
+
 router.get('/start-session', async (req, res) => {
   try {
     const response = await axios.get(`${ESP32_BASE_URL}/start-session`);
