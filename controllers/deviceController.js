@@ -4,7 +4,7 @@ const express = require('express');
 const axios = require('axios');
 const router = express.Router();
 
-const ESP32_BASE_URL = 'http://192.168.1.92'; 
+const ESP32_BASE_URL = 'http://192.168.1.95'; 
 
 router.get('/start-session', async (req, res) => {
   try {
