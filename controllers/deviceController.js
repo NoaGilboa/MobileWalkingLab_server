@@ -3,8 +3,25 @@
 const express = require('express');
 const axios = require('axios');
 const router = express.Router();
+let currentCommand = 'idle';
 
 const ESP32_BASE_URL = 'http://192.168.1.95'; 
+
+router.get('/command', (req, res) => {
+  res.json({ command: currentCommand });
+});
+
+router.post('/command', (req, res) => {
+  const { command } = req.body;
+
+  if (!['start', 'stop', 'idle'].includes(command)) {
+    return res.status(400).json({ error: 'Invalid command' });
+  }
+
+  currentCommand = command;
+  console.log(`🔁 Command updated to: ${command}`);
+  res.json({ message: 'Command updated successfully' });
+});
 
 router.get('/start-session', async (req, res) => {
   try {
