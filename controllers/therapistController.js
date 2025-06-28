@@ -34,4 +34,21 @@ router.post('/login', async (req, res) => {
     }
 });
 
+// Update therapist name
+router.put('/:id/name', async (req, res) => {
+    try {
+        const therapistId = req.params.id;
+        const { name } = req.body;
+        const updatedTherapist = await TherapistService.updateTherapistName(therapistId, name);
+        if (updatedTherapist) {
+            res.json({ message: 'Therapist name updated successfully', therapist: updatedTherapist });
+        } else {
+            res.status(404).json({ message: 'Therapist not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+
 module.exports = router;
