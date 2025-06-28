@@ -31,6 +31,25 @@ class TherapistDataAccess {
             throw new Error(`Error retrieving therapist: ${error.message}`);
         }
     }
+
+    static async updateTherapistName(therapistId, newName) {
+    try {
+        const pool = await sql.connect(dbConfig);
+        const result = await pool.request()
+            .input('therapist_id', sql.NVarChar, therapistId)
+            .input('name', sql.NVarChar, newName)
+            .query(`
+                UPDATE therapists
+                SET name = @name
+                WHERE therapist_id = @therapist_id;
+
+                SELECT * FROM therapists WHERE therapist_id = @therapist_id;
+            `);
+        return result.recordset[0] || null;
+    } catch (error) {
+        throw new Error(`Error updating therapist name: ${error.message}`);
+    }
+}
 }
 
 module.exports = TherapistDataAccess;

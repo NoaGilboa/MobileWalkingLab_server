@@ -14,6 +14,11 @@ class TherapistService {
         }
         return null;
     }
+
+    static async updateTherapistName(therapistId, newName) {
+        return await TherapistDataAccess.updateTherapistName(therapistId, newName);
+    }
+
 }
 
 module.exports = TherapistService;
