@@ -30,6 +30,9 @@ class PatientService {
     static async deletePatient(id) {
         return await PatientDataAccess.deletePatient(id);
     }
+    static async deleteNotesByPatientId(patientId) {
+    return await PatientDataAccess.deleteNotesByPatientId(patientId);
+  }
 
     static async saveSpeedMeasurement(patientId, speedKmh, source, footLiftCount) {
     return await PatientDataAccess.saveSpeedMeasurement(patientId, speedKmh, source, footLiftCount);

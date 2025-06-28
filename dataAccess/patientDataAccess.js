@@ -161,6 +161,20 @@ class PatientDataAccess {
         }
     }
 
+    // מחיקת כל ההערות של מטופל לפי patient_id
+static async deleteNotesByPatientId(patientId) {
+    try {
+        const pool = await sql.connect(dbConfig);
+        const result = await pool.request()
+            .input('patient_id', sql.Int, patientId)
+            .query(`DELETE FROM patient_notes WHERE patient_id = @patient_id;`);
+        return result.rowsAffected[0] > 0;
+    } catch (error) {
+        throw new Error(`Error deleting notes: ${error.message}`);
+    }
+}
+
+
 
 // שמירת מדידת מהירות
 static async saveSpeedMeasurement(patientId, speedKmh, source = 'manual', footLiftCount = null) {

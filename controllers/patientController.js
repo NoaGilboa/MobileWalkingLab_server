@@ -116,6 +116,21 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
+// DELETE /api/patients/:id/notes
+router.delete('/:id/notes', async (req, res) => {
+    try {
+        const success = await PatientService.deleteNotesByPatientId(req.params.id);
+        if (success) {
+            res.json({ message: 'Notes deleted successfully' });
+        } else {
+            res.status(404).json({ message: 'No notes found to delete' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+
 // שמירת מדידת מהירות
 router.post('/:id/speed', async (req, res) => {
     try {
