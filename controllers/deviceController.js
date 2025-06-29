@@ -20,7 +20,7 @@ router.post('/command', (req, res) => {
     return res.status(400).json({ error: 'Invalid command' });
   }
 
-  currentCommand = { command, patientId: command === 'start' ? patientId : null };
+  currentCommand = { command, patientId };
   console.log(`🔁 Command updated:`, currentCommand);
   res.json({ message: 'Command updated successfully' });
 });
