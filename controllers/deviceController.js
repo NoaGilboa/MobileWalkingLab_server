@@ -3,7 +3,10 @@
 const express = require('express');
 const axios = require('axios');
 const router = express.Router();
-let currentCommand = 'idle';
+let currentCommand = {
+  command: 'idle',
+  patientId: null
+};
 const DeviceService = require('../services/deviceService');
 
 router.get('/command', (req, res) => {
@@ -11,18 +14,18 @@ router.get('/command', (req, res) => {
 });
 
 router.post('/command', (req, res) => {
-  const { command } = req.body;
+  const { command, patientId } = req.body;
 
   if (!['start', 'stop', 'idle'].includes(command)) {
     return res.status(400).json({ error: 'Invalid command' });
   }
 
-  currentCommand = command;
-  console.log(`🔁 Command updated to: ${command}`);
+  currentCommand = { command, patientId: command === 'start' ? patientId : null };
+  console.log(`🔁 Command updated:`, currentCommand);
   res.json({ message: 'Command updated successfully' });
 });
 
-//save measurements
+//get measurements from esp32 and save measurements at db
 router.post('/:id/data', async (req, res) => {
   try {
     const patientId = parseInt(req.params.id);
@@ -38,7 +41,7 @@ router.post('/:id/data', async (req, res) => {
   }
 });
 
-//get all measurements
+//get all measurements from db
 router.get('/:id/measurements', async (req, res) => {
   try {
     const patientId = parseInt(req.params.id);
