@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const PatientService = require('../services/patientService');
+const OpenAIService = require('../services/openAIService');
 
 
 // Get all patients
@@ -129,6 +130,46 @@ router.delete('/:id/notes', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+router.post('/:id/treatment-recommendation', async (req, res) => {
+  try {
+    const patientId = parseInt(req.params.id);
+
+    const patient = await PatientService.getPatientById(patientId);
+    const notes = await PatientService.getNotesByPatientId(patientId);
+    const speedHistory = await PatientService.getSpeedHistory(patientId);
+
+    if (!patient) {
+      return res.status(404).json({ message: 'Patient not found' });
+    }
+
+    try {
+      const recommendation = await OpenAIService.getTreatmentRecommendation({
+        birth_date: patient.birth_date,
+        gender: patient.gender,
+        weight: patient.weight,
+        height: patient.height,
+        medical_condition: patient.medical_condition,
+        mobility_status: patient.mobility_status,
+        notes: notes.map(n => n.note),
+        speedHistory,
+      });
+
+      if (recommendation) {
+        res.json({ recommendation });
+      } else {
+        res.status(500).json({ message: 'No recommendation generated' });
+      }
+
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 
 // שמירת מדידת מהירות
