@@ -91,7 +91,7 @@ async function connectDB() {
         await pool.request().query(`
             IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'device_measurements')
             BEGIN
-                CREATE TABLE patient_speed_measurements (
+                CREATE TABLE device_measurements (
                     id INT IDENTITY(1,1) PRIMARY KEY,
                     patient_id INT NOT NULL,
                     measured_at DATETIME DEFAULT GETDATE(),
