@@ -45,7 +45,7 @@ router.post('/:id/data', async (req, res) => {
 router.get('/:id/measurements', async (req, res) => {
   try {
     const patientId = parseInt(req.params.id);
-    const raw = await DeviceService.getFieldHistory(patientId, [
+    const raw = await DeviceService.getDeviceMeasurements(patientId, [
       'speed', 'distance',
       'handPressureL', 'handPressureR',
       'footLiftL', 'footLiftR'
