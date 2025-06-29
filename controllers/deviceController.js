@@ -4,8 +4,7 @@ const express = require('express');
 const axios = require('axios');
 const router = express.Router();
 let currentCommand = 'idle';
-
-const ESP32_BASE_URL = 'http://192.168.1.95'; 
+const DeviceService = require('../services/deviceService');
 
 router.get('/command', (req, res) => {
   res.json({ command: currentCommand });
@@ -23,35 +22,55 @@ router.post('/command', (req, res) => {
   res.json({ message: 'Command updated successfully' });
 });
 
-router.post('/data', (req, res) => {
-  const measurements = req.body;
-  console.log("📥 Received measurements:", measurements.length);
-  // Optional: Save to database here
-  res.json({ message: 'Measurements received', count: measurements.length });
-});
-
-
-router.get('/start-session', async (req, res) => {
+//save measurements
+router.post('/:id/data', async (req, res) => {
   try {
-    const response = await axios.get(`${ESP32_BASE_URL}/start-session`);
-    res.json({ message: 'Session started', espResponse: response.data });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to start session' });
+    const patientId = parseInt(req.params.id);
+    const measurements = req.body;
+    if (!Array.isArray(measurements) || measurements.length === 0) {
+      return res.status(400).json({ error: 'No measurements provided' });
+    }
+    const raw = await DeviceService.saveDeviceMeasurements(patientId, measurements)
+    res.json({ message: 'Measurements received', count: measurements.length });
+  } catch (error) {
+    console.error("❌ Error fetching device measurements:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-
-router.get('/stop-session', async (req, res) => {
+//get all measurements
+router.get('/:id/measurements', async (req, res) => {
   try {
-    await axios.get(`${ESP32_BASE_URL}/stop-session`);
-    const response = await axios.get(`${ESP32_BASE_URL}/data`);
+    const patientId = parseInt(req.params.id);
+    const raw = await DeviceService.getFieldHistory(patientId, [
+      'speed', 'distance',
+      'handPressureL', 'handPressureR',
+      'footLiftL', 'footLiftR'
+    ]);
 
-    const data = response.data;
+    const grouped = {
+      speed: [],
+      distance: [],
+      handPressureL: [],
+      handPressureR: [],
+      footLiftL: [],
+      footLiftR: []
+    };
 
-    // כאן תוכלי לשמור למסד נתונים או לעבד את זה
-    res.json({ message: 'Session stopped, data retrieved', data });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to stop session or retrieve data' });
+    raw.forEach(entry => {
+      const time = entry.measured_at;
+      if (entry.speed != null) grouped.speed.push({ value: entry.speed, measured_at: time });
+      if (entry.distance != null) grouped.distance.push({ value: entry.distance, measured_at: time });
+      if (entry.handPressureL != null) grouped.handPressureL.push({ value: entry.handPressureL, measured_at: time });
+      if (entry.handPressureR != null) grouped.handPressureR.push({ value: entry.handPressureR, measured_at: time });
+      if (entry.footLiftL != null) grouped.footLiftL.push({ value: entry.footLiftL, measured_at: time });
+      if (entry.footLiftR != null) grouped.footLiftR.push({ value: entry.footLiftR, measured_at: time });
+    });
+
+    res.json(grouped);
+  } catch (error) {
+    console.error("❌ Error fetching device measurements:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 

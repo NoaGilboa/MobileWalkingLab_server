@@ -1,21 +1,21 @@
 const sql = require('mssql');
 
 const config = {
-  user: process.env.DB_USER || 'noa123456',
-  password: process.env.DB_PASS || '123456Noa',
-  server: process.env.DB_SERVER, 
-  database: process.env.DB_NAME,
-  options: {
-    encrypt: true, 
-    trustServerCertificate: false
-  }
+    user: process.env.DB_USER || 'noa123456',
+    password: process.env.DB_PASS || '123456Noa',
+    server: process.env.DB_SERVER,
+    database: process.env.DB_NAME,
+    options: {
+        encrypt: true,
+        trustServerCertificate: false
+    }
 };
 
 async function connectDB() {
     try {
         const pool = await sql.connect(config);
         console.log("Connected to Azure SQL Database!");
-       
+
         await pool.request().query(`
             IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'therapists')
             BEGIN
@@ -29,7 +29,7 @@ async function connectDB() {
             END
         `);
         console.log("Checked and created 'therapists' table if not exists");
-        
+
         await pool.request().query(`
             IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'patients')
             BEGIN
@@ -86,6 +86,26 @@ async function connectDB() {
             END
         `);
         console.log("Checked and created 'patient_speed_measurements' table if not exists");
+
+
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'device_measurements')
+            BEGIN
+                CREATE TABLE patient_speed_measurements (
+                    id INT IDENTITY(1,1) PRIMARY KEY,
+                    patient_id INT NOT NULL,
+                    measured_at DATETIME DEFAULT GETDATE(),
+                    speed FLOAT NOT NULL,
+                    distance FLOAT NOT NULL,
+                    handPressureL FLOAT NOT NULL,
+                    handPressureR FLOAT NOT NULL,
+                    footLiftL INT NULL,
+                    footLiftR INT NULL,
+                    FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
+                );
+            END
+        `);
+        console.log("Checked and created 'device_measurements' table if not exists");
 
     } catch (err) {
         console.error("Database connection failed:", err);
