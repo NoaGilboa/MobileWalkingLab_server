@@ -17,17 +17,16 @@ static async saveDeviceMeasurements(patientId, measurements) {
             .input('handPressureR', sql.Float, m.handPressureR)
             .input('footLiftL', sql.Int, m.footLiftL)
             .input('footLiftR', sql.Int, m.footLiftR)
-            .input('measured_at', sql.DateTime, new Date(m.timestamp))
             .query(`
                 INSERT INTO device_measurements (
                   patient_id, speed, distance,
                   handPressureL, handPressureR,
-                  footLiftL, footLiftR, measured_at
+                  footLiftL, footLiftR
                 )
                 VALUES (
                   @patient_id, @speed, @distance,
                   @handPressureL, @handPressureR,
-                  @footLiftL, @footLiftR, @measured_at
+                  @footLiftL, @footLiftR
                 )
             `);
     }
