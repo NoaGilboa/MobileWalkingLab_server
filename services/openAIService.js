@@ -59,7 +59,7 @@ ${speedText}
         },
         { role: "user", content: prompt },
       ],
-      max_tokens: 300,
+      max_tokens: 1500,
       temperature: 0.7,
     });
 
