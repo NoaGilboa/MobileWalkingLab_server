@@ -1,178 +1,265 @@
 
-# Mobile Walking Lab Backend
+# 🧠 Mobile Walking Lab – Server
 
-This is the backend server for the **Mobile Walking Lab** application, developed using **Node.js**, **Express.js**, and **MongoDB** with **Mongoose**. It provides RESTful API endpoints for managing patients and therapists within the application.
+This is the **Node.js + Express** backend server for the Mobile Walking Lab system. It acts as a central API for managing patients, receiving ESP32 device data, providing GPT-based treatment recommendations, and storing structured data in an Azure SQL database.
 
-## Table of Contents
-- [Installation](#installation)
-- [Getting Started](#getting-started)
-- [Technologies Used](#technologies-used)
-- [API Documentation](#api-documentation)
-  - [Patient Endpoints](#patient-endpoints)
-  - [Therapist Endpoints](#therapist-endpoints)
-- [Project Structure](#project-structure)
+---
 
-## Installation
+## 🚀 Features
 
-To set up and run this project locally, follow these steps:
+* ✅ **Therapist authentication** (registration + login)
+* 👩‍⚕️ **Manage patient data** – add/update/delete/view
+* 📝 **Add and view therapist notes**
+* 📊 **Save walking speed measurements** (manual or from ESP32)
+* 🤖 **Generate GPT-based treatment recommendations** via OpenAI API
+* 📡 **ESP32 polling interface** (commands + upload measurements - speed, distance, foot lifts, and hand pressure)
+* 🧠 **Treatment insights** based on medical data + walking history
 
-1. **Clone the repository**:
+---
 
-    ```sh
-    git clone https://github.com/NoaGilboa/Mobile-Walking-Lab.git
-    cd mobile-walking-lab-backend
-    ```
+## 📁 Project Structure
 
-2. **Install dependencies**:
+```
+server/
+├── config/
+│   └── db.js                   # Azure SQL DB config + schema initialization
+│
+├── controllers/
+│   ├── deviceController.js     # ESP32 polling, data uploads
+│   ├── patientController.js    # Patient APIs (CRUD, notes, speed)
+│   └── therapistController.js  # Therapist login/register
+│
+├── dataAccess/
+│   ├── deviceDataAccess.js     # SQL access for ESP32 measurements
+│   ├── patientDataAccess.js    # SQL access for patients + notes
+│   └── therapistDataAccess.js  # SQL access for therapists
+│
+├── services/
+│   ├── deviceService.js        # Logic for device measurements
+│   ├── patientService.js       # Business logic for patient module
+│   └── openAIService.js        # GPT-3.5 logic for treatment recommendation
+│
+├── .env                        # API keys, DB credentials (ignored in Git)
+├── server.js                   # Main entrypoint – sets up Express, routes, DB
+└── package.json
+```
+---
+---
 
-    ```sh
-    npm install
-    ```
+## 📡 ESP32 Communication
 
-3. **Start MongoDB**:
-   Ensure MongoDB is running on your system. The application expects it to run locally on port `27017`.
+### 🔁 Polling for Commands
 
-4. **Run the server**:
+The ESP32 microcontroller polls the server every 3 seconds to get its current command:
 
-    ```sh
-    npm start
-    ```
+```
+GET /api/device/command
+```
 
-    The server will start at `http://localhost:5001`.
+Returns:
 
-## Getting Started
+```json
+{ "command": "start" | "stop" | "idle", "patientId": number }
+```
 
-This backend provides RESTful APIs for managing therapists and patients in the **Mobile Walking Lab** application.
+The command is set when a therapist presses "Start Measurement" or "Stop Measurement" on the client UI:
 
-### Middleware
+```
+POST /api/device/command
+```
 
-- **CORS**: Cross-Origin Resource Sharing is enabled to allow requests from the frontend (defaulting to `http://localhost:3000`).
-- **Body Parser**: Parses incoming request bodies in a middleware before your handlers, available under `req.body`.
+Payload:
 
-## Technologies Used
+```json
+{ "command": "start", "patientId": 5 }
+```
 
-- **Node.js**: JavaScript runtime for server-side programming.
-- **Express.js**: Web framework for creating the API.
-- **MongoDB & Mongoose**: MongoDB for the database, with Mongoose as the Object Data Modeling (ODM) library.
-- **body-parser**: Middleware for parsing request bodies.
-- **CORS**: Allows cross-origin requests from the frontend.
+### 📤 Uploading ESP32 Measurements
 
-Dependencies are listed in `package.json`:
+Once the ESP32 finishes recording, it sends all its buffered data:
+
+```
+POST /api/device/:id/data
+```
+
+Payload:
+
+```json
+[
+  {
+    "speed": 1.2,
+    "distance": 5.3,
+    "handPressureL": 7.8,
+    "handPressureR": 6.5,
+    "footLiftL": 2,
+    "footLiftR": 3
+  }
+]
+```
+
+These entries are inserted into the `device_measurements` table and linked to the patient.
+
+### 📥 Get All Device Measurements
+
+```
+GET /api/device/:id/measurements
+```
+
+Returns grouped data by field:
 
 ```json
 {
-  "dependencies": {
-    "body-parser": "^1.20.3",
-    "cors": "^2.8.5",
-    "express": "^4.21.1",
-    "mongoose": "^8.8.3"
-  }
+  "speed": [ { "value": 1.2, "measured_at": "..." }, ... ],
+  "distance": [...],
+  "handPressureL": [...],
+  "handPressureR": [...],
+  "footLiftL": [...],
+  "footLiftR": [...]
 }
 ```
 
-## API Documentation
+Stored in `device_measurements` table.
 
-### Patient Endpoints
+---
+## 📌 Sample API Routes
 
-- **`GET /api/patients`** - Retrieves all patients.
-- **`POST /api/patients`** - Adds a new patient.
-  - Request body:
-    ```json
-    {
-      "userId": "string",
-      "name": "string",
-      "age": "number",
-      "condition": "string"
-    }
-    ```
-- **`GET /api/patients/:userId`** - Retrieves details of a specific patient by `userId`.
-- **`GET /api/patients/:userId/notes`** - Retrieves all notes for a specific patient.
-- **`POST /api/patients/:userId/notes`** - Adds a note to a specific patient.
-  - Request body:
-    ```json
-    {
-      "note": "string"
-    }
-    ```
+| Method | Route                                        | Description                      |
+| ------ | -------------------------------------------- | -------------------------------- |
+| POST   | `/api/therapists/login`                      | Login therapist                  |
+| POST   | `/api/therapists/register`                   | Register therapist               |
+| GET    | `/api/patients`                              | Get all patients                 |
+| POST   | `/api/patients`                              | Add new patient                  |
+| GET    | `/api/patients/:id`                          | Get patient details              |
+| PUT    | `/api/patients/:id`                          | Update patient                   |
+| DELETE | `/api/patients/:id`                          | Delete patient                   |
+| GET    | `/api/patients/:id/notes`                    | Get patient notes                |
+| POST   | `/api/patients/:id/notes`                    | Add note                         |
+| DELETE | `/api/patients/:id/notes`                    | Delete all patient notes         |
+| GET    | `/api/patients/:id/speed-history`            | Get speed history                |
+| POST   | `/api/patients/:id/speed`                    | Save manual speed measurement    |
+| POST   | `/api/patients/:id/treatment-recommendation` | Get GPT treatment recommendation |
+| GET    | `/api/device/command`                        | ESP32 fetches command            |
+| POST   | `/api/device/command`                        | Set command from frontend        |
+| POST   | `/api/device/:id/data`                       | ESP32 uploads measurement batch  |
+| GET    | `/api/device/:id/measurements`               | Fetch all ESP32 measurements     |
 
-### Therapist Endpoints
+---
 
-- **`POST /api/therapists/register`** - Registers a new therapist.
-  - Request body:
-    ```json
-    {
-      "email": "string",
-      "password": "string",
-      "name": "string"
-    }
-    ```
-- **`POST /api/therapists/login`** - Logs in a therapist.
-  - Request body:
-    ```json
-    {
-      "email": "string",
-      "password": "string"
-    }
-    ```
+## 🧠 GPT Integration
 
-## Project Structure
+* Implemented using [OpenAI Node SDK](https://www.npmjs.com/package/openai)
+* API key stored in `.env` via `OPENAI_API_KEY`
+* Builds dynamic prompts based on:
 
-```
-mobileWalkingLab_server/
-├── config/
-│   └── db.js                   # Database connection setup
-├── controllers/
-│   ├── patientController.js    # Handles patient-related API routes
-│   └── therapistController.js  # Handles therapist-related API routes
-├── dataAccess/
-│   ├── patientDataAccess.js    # Data access layer for patients
-│   └── therapistDataAccess.js  # Data access layer for therapists
-├── models/
-│   ├── patient.js              # Patient schema for MongoDB
-│   └── therapist.js            # Therapist schema for MongoDB
-├── services/
-│   ├── patientService.js       # Business logic layer for patients
-│   └── therapistService.js     # Business logic layer for therapists
-├── package.json                # Project dependencies
-├── server.js                   # Entry point to start the server
-└── README.md                   # Project documentation (you're here!)
-```
+  * Age (calculated)
+  * Gender, height, weight, medical condition, mobility status
+  * Therapist notes
+* Manual speed history
+* **ESP32 sensor data**, including:
 
-### Connecting to MongoDB
+  * speed
+  * distance
+  * hand pressure (left & right)
+  * number of foot lifts (left & right)
 
-The server connects to a MongoDB instance using the configuration from `config/db.js`. Make sure MongoDB is running locally on port `27017`:
+These values are dynamically injected into a Hebrew prompt and submitted to GPT-3.5 to generate a physiotherapy recommendation.
+
+
+Example logic (see `openAIService.js`):
 
 ```js
-const mongoose = require('mongoose');
-
-const connectDB = async () => {
-  try {
-    await mongoose.connect('mongodb://localhost:27017/mobile_walking_lab', {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log('MongoDB connected...');
-  } catch (err) {
-    console.error('MongoDB connection failed:', err.message);
-    process.exit(1);
-  }
-};
-
-module.exports = connectDB;
+const response = await openai.chat.completions.create({
+  model: "gpt-3.5-turbo",
+  messages: [
+    { role: "system", content: "אתה פיזיותרפיסט מומחה..." },
+    { role: "user", content: prompt },
+  ]
+});
 ```
 
-## Usage
+---
 
-1. **Start the Backend**:
-   ```sh
-   npm start
-   ```
-   The backend will start on `http://localhost:5001`.
+## 🧱 Database
 
-2. **API Usage**:
-   Use a tool like **Postman** or **cURL** to interact with the endpoints listed above.
+* Uses **Azure SQL Database**
 
-3. **Connecting to the Frontend**:
-   Make sure the frontend is running on `http://localhost:3000` to interact with this backend server.
+* All tables are initialized in `config/db.js` if they don’t exist:
+
+  * `therapists`
+  * `patients`
+  * `patient_notes`
+  * `patient_speed_measurements`
+  * `device_measurements`
+
+* Relationships:
+
+  * `patient_notes`, `patient_speed_measurements` and `device_measurements` reference `patients`
+  * `patient_notes` also reference `therapists`
+
+---
+
+## ☁️ Azure Deployment
+
+To deploy:
+
+1. Push your code to a GitHub repo
+2. Go to [Azure Portal](https://portal.azure.com)
+3. Create a Web App (Node.js runtime)
+4. Link deployment source to GitHub
+5. Configure environment variables (`OPENAI_API_KEY`, DB creds)
+6. Enable continuous deployment
+
+> You can also deploy manually using FTP or Azure CLI.
+
+---
+
+## 🔧 Setup Locally
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/NoaGilboa/Mobile-Walking-Lab.git
+cd Mobile-Walking-Lab/server
+```
+
+### 2. Install dependencies
+
+```bash
+npm install
+```
+
+### 3. Configure `.env`
+
+```bash
+DB_USER=your_user
+DB_PASS=your_password
+DB_SERVER=your_server.database.windows.net
+DB_NAME=your_database
+OPENAI_API_KEY=your_openai_key
+```
+
+### 4. Run the server
+
+```bash
+node server.js
+```
+
+---
+
+## ✅ Sample `.env`
+
+```
+DB_USER=noa123456
+DB_PASS=123456Noa
+DB_SERVER=your-server-name.database.windows.net
+DB_NAME=walkinglabdb
+OPENAI_API_KEY=sk-...
+```
+---
+
+## 👩‍💻 Developed By
+
+**Noa Gilboa**
+[GitHub Profile](https://github.com/NoaGilboa)
 
 

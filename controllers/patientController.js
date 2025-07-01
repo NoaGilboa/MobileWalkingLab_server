@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const PatientService = require('../services/patientService');
 const OpenAIService = require('../services/openAIService');
+const DeviceService = require('../services/deviceService');
 
 
 // Get all patients
@@ -138,6 +139,11 @@ router.post('/:id/treatment-recommendation', async (req, res) => {
     const patient = await PatientService.getPatientById(patientId);
     const notes = await PatientService.getNotesByPatientId(patientId);
     const speedHistory = await PatientService.getSpeedHistory(patientId);
+    const espHistory = await DeviceService.getDeviceMeasurements(patientId, [
+      'speed', 'distance',
+      'handPressureL', 'handPressureR',
+      'footLiftL', 'footLiftR'
+    ]);
 
     if (!patient) {
       return res.status(404).json({ message: 'Patient not found' });
@@ -153,6 +159,7 @@ router.post('/:id/treatment-recommendation', async (req, res) => {
         mobility_status: patient.mobility_status,
         notes: notes.map(n => n.note),
         speedHistory,
+        espHistory
       });
 
       if (recommendation) {
