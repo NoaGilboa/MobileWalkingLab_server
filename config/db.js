@@ -1,4 +1,5 @@
 const sql = require('mssql');
+require('dotenv').config();
 
 const config = {
     user: process.env.DB_USER || 'noa123456',
@@ -10,6 +11,14 @@ const config = {
         trustServerCertificate: false
     }
 };
+
+console.log('Loaded env config:', {
+  DB_SERVER: process.env.DB_SERVER,
+  DB_NAME: process.env.DB_NAME,
+  DB_USER: process.env.DB_USER,
+  DB_PASS: process.env.DB_PASS
+});
+
 
 async function connectDB() {
     try {

@@ -39,6 +39,10 @@ server/
 │   ├── patientService.js       # Business logic for patient module
 │   └── openAIService.js        # GPT-3.5 logic for treatment recommendation
 │
+├── tests/                      # End‑to‑end & integration tests (Jest + Supertest)
+│   ├── deviceController.test.js
+│   ├── patientController.test.js
+│   └── therapistController.test.js
 ├── .env                        # API keys, DB credentials (ignored in Git)
 ├── server.js                   # Main entrypoint – sets up Express, routes, DB
 └── package.json
@@ -121,6 +125,38 @@ Returns grouped data by field:
 Stored in `device_measurements` table.
 
 ---
+## 🧪 Tests
+
+This project ships with a comprehensive **integration‑test suite** written in **Jest** and **Supertest**. Each major controller is covered:
+
+| File                                | Coverage                                                            |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| `tests/deviceController.test.js`    | Command polling, command validation, measurement upload & retrieval |
+| `tests/patientController.test.js`   | CRUD + notes, speed history, GPT recommendation endpoint            |
+| `tests/therapistController.test.js` | Therapist registration and login flows                              |
+
+### Running the test suite
+
+```bash
+# Install dev‑dependencies first (jest, supertest)
+npm i --save‑dev jest supertest
+
+# Execute all tests
+npm test
+```
+
+> **Tip:** The default `npm test` script in **package.json** already calls `jest --runInBand` so database connections close cleanly.
+
+### How it works
+
+* Each test connects to the **Azure SQL** instance defined in `.env` (or your local SQL Server) and spins up an **Express** app from `server.js`.
+* The `beforeAll` / `afterAll` hooks **seed** and **clean** the database so tests run in isolation.
+* Device tests simulate an ESP32 by calling the REST endpoints directly.
+* GPT recommendation test is marked with a **15 s timeout** to accommodate OpenAI latency; if the key is missing the test will skip gracefully.
+
+---
+
+
 ## 📌 Sample API Routes
 
 | Method | Route                                        | Description                      |

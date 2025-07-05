@@ -16,13 +16,15 @@ app.use(cors());
 app.use(express.json());
 app.use(bodyParser.json());
 
+// Routes
+app.use('/api/patients', patientController);
+app.use('/api/therapists', therapistController);
+app.use('/api/device', deviceController);
+
 // connect to the database
-connectDB().then(() => {
-    // Routes
-    app.use('/api/patients', patientController);
-    app.use('/api/therapists', therapistController);
-    app.use('/api/device', deviceController);
-    
+if (require.main === module) 
+{
+    connectDB().then(() => {
     // Start the server
     app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
@@ -30,3 +32,7 @@ connectDB().then(() => {
 }).catch(err => {
     console.error("Server failed to start due to DB error:", err);
 });
+}
+
+
+module.exports = app;
