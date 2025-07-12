@@ -13,10 +13,10 @@ const config = {
 };
 
 console.log('Loaded env config:', {
-  DB_SERVER: process.env.DB_SERVER,
-  DB_NAME: process.env.DB_NAME,
-  DB_USER: process.env.DB_USER,
-  DB_PASS: process.env.DB_PASS
+    DB_SERVER: process.env.DB_SERVER,
+    DB_NAME: process.env.DB_NAME,
+    DB_USER: process.env.DB_USER,
+    DB_PASS: process.env.DB_PASS
 });
 
 
@@ -115,6 +115,21 @@ async function connectDB() {
             END
         `);
         console.log("Checked and created 'device_measurements' table if not exists");
+
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'patient_videos')
+            BEGIN
+                CREATE TABLE patient_videos (
+                    id INT IDENTITY PRIMARY KEY,
+                    patient_id INT NOT NULL,
+                    file_name NVARCHAR(255) NOT NULL,
+                    blob_url NVARCHAR(MAX) NOT NULL,
+                    uploaded_at DATETIME DEFAULT GETDATE(),
+                    FOREIGN KEY (patient_id) REFERENCES patients(id)
+                );
+            END
+        `);
+        console.log("Checked and created 'patient_videos' table if not exists");
 
     } catch (err) {
         console.error("Database connection failed:", err);

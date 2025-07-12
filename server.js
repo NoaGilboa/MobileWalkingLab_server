@@ -7,6 +7,7 @@ const { connectDB } = require('./config/db');
 const patientController = require('./controllers/patientController');
 const therapistController = require('./controllers/therapistController');
 const deviceController = require('./controllers/deviceController');
+const videoController = require('./controllers/videoController');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -20,6 +21,7 @@ app.use(bodyParser.json());
 app.use('/api/patients', patientController);
 app.use('/api/therapists', therapistController);
 app.use('/api/device', deviceController);
+app.use('/api/video', videoController);
 
 // connect to the database
 if (require.main === module) 
