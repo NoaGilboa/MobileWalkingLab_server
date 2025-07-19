@@ -122,10 +122,12 @@ async function connectDB() {
                 CREATE TABLE patient_videos (
                     id INT IDENTITY PRIMARY KEY,
                     patient_id INT NOT NULL,
+                    device_measurement_id INT NULL,
                     file_name NVARCHAR(255) NOT NULL,
                     blob_url NVARCHAR(MAX) NOT NULL,
                     uploaded_at DATETIME DEFAULT GETDATE(),
-                    FOREIGN KEY (patient_id) REFERENCES patients(id)
+                    FOREIGN KEY (patient_id) REFERENCES patients(id),
+                    FOREIGN KEY (device_measurement_id) REFERENCES device_measurements(id) ON DELETE SET NULL
                 );
             END
         `);

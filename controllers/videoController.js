@@ -21,10 +21,11 @@ async function ensureContainer() {
 }
 ensureContainer();
 
-// 📤 Upload video for a patient
+// Upload video for a patient
 router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
   const patientId = parseInt(req.params.id);
   const file = req.file;
+  const { device_measurement_id } = req.body;
 
   if (!file) return res.status(400).json({ error: 'No video file provided' });
 
@@ -39,9 +40,10 @@ router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
       .input('patient_id', sql.Int, patientId)
       .input('file_name', sql.NVarChar, fileName)
       .input('blob_url', sql.NVarChar, blockBlobClient.url)
+      .input('device_measurement_id', sql.Int, device_measurement_id || null) 
       .query(`
-        INSERT INTO patient_videos (patient_id, file_name, blob_url)
-        VALUES (@patient_id, @file_name, @blob_url)
+        INSERT INTO patient_videos (patient_id, file_name, blob_url, device_measurement_id)
+        VALUES (@patient_id, @file_name, @blob_url, @device_measurement_id)
       `);
 
     res.status(201).json({ message: 'Video uploaded successfully', url: blockBlobClient.url });
@@ -50,6 +52,31 @@ router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Get video by device measurement ID
+router.get('/by-measurement/:measurementId', async (req, res) => {
+  const measurementId = parseInt(req.params.measurementId);
+
+  try {
+    const pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('device_measurement_id', sql.Int, measurementId)
+      .query(`
+        SELECT TOP 1 * FROM patient_videos
+        WHERE device_measurement_id = @device_measurement_id
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'No video found for this measurement' });
+    }
+
+    res.json(result.recordset[0]);
+  } catch (err) {
+    console.error('Fetch error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // 📥 Get list of videos for a patient
 router.get('/:id/videos', async (req, res) => {
