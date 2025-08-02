@@ -11,6 +11,7 @@ const AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STR
 const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING);
 const containerName = 'patient-videos';
 const containerClient = blobServiceClient.getContainerClient(containerName);
+const { generateBlobSASQueryParameters, BlobSASPermissions, SASProtocol, StorageSharedKeyCredential } = require('@azure/storage-blob');
 
 // Ensure container exists
 async function ensureContainer() {
@@ -70,7 +71,33 @@ router.get('/by-measurement/:measurementId', async (req, res) => {
       return res.status(404).json({ error: 'No video found for this measurement' });
     }
 
-    res.json(result.recordset[0]);
+    const video = result.recordset[0];
+
+    // ⚙️ פרטי חשבון ואחסון מתוך משתני סביבה
+    const accountName = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+    const accountKey = process.env.AZURE_STORAGE_ACCOUNT_KEY;
+
+    const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
+    const blobClient = blobServiceClient.getContainerClient(containerName).getBlobClient(video.file_name);
+
+    // 🎟️ יצירת SAS URL תקף עד 31.12.2030
+    const sasToken = generateBlobSASQueryParameters({
+      containerName,
+      blobName: video.file_name,
+      permissions: BlobSASPermissions.parse('r'), // read only
+      protocol: SASProtocol.Https,
+      startsOn: new Date(),
+      expiresOn: new Date('2030-12-31T23:59:59Z')
+    }, sharedKeyCredential).toString();
+
+    const sasUrl = `${blobClient.url}?${sasToken}`;
+
+    // שליחת כתובת עם SAS
+    res.json({
+      ...video,
+      blob_url: sasUrl
+    });
+
   } catch (err) {
     console.error('Fetch error:', err);
     res.status(500).json({ error: err.message });
