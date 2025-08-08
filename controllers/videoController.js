@@ -1,6 +1,6 @@
 const express = require('express');
 const multer = require('multer');
-const { BlobServiceClient } = require('@azure/storage-blob');
+const { generateBlobSASQueryParameters, BlobSASPermissions, SASProtocol, StorageSharedKeyCredential, BlobServiceClient } = require('@azure/storage-blob');
 const sql = require('mssql');
 const dbConfig = require('../config/db');
 
@@ -73,14 +73,12 @@ router.get('/by-measurement/:measurementId', async (req, res) => {
 
     const video = result.recordset[0];
 
-    // ⚙️ פרטי חשבון ואחסון מתוך משתני סביבה
     const accountName = process.env.AZURE_STORAGE_ACCOUNT_NAME;
     const accountKey = process.env.AZURE_STORAGE_ACCOUNT_KEY;
 
     const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
     const blobClient = blobServiceClient.getContainerClient(containerName).getBlobClient(video.file_name);
 
-    // 🎟️ יצירת SAS URL תקף עד 31.12.2030
     const sasToken = generateBlobSASQueryParameters({
       containerName,
       blobName: video.file_name,
@@ -92,7 +90,6 @@ router.get('/by-measurement/:measurementId', async (req, res) => {
 
     const sasUrl = `${blobClient.url}?${sasToken}`;
 
-    // שליחת כתובת עם SAS
     res.json({
       ...video,
       blob_url: sasUrl
