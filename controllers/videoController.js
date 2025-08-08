@@ -11,7 +11,6 @@ const AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STR
 const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING);
 const containerName = 'patient-videos';
 const containerClient = blobServiceClient.getContainerClient(containerName);
-const { generateBlobSASQueryParameters, BlobSASPermissions, SASProtocol, StorageSharedKeyCredential } = require('@azure/storage-blob');
 
 // Ensure container exists
 async function ensureContainer() {
