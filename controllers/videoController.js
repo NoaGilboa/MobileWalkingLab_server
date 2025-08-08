@@ -56,13 +56,13 @@ router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
 // Get video by device measurement ID
 router.get('/by-measurement/:measurementId', async (req, res) => {
   const measurementId = parseInt(req.params.measurementId);
-
   try {
     const pool = await sql.connect(dbConfig);
     const result = await pool.request()
       .input('device_measurement_id', sql.Int, measurementId)
       .query(`
-        SELECT TOP 1 * FROM patient_videos
+        SELECT TOP 1 id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
+        FROM patient_videos
         WHERE device_measurement_id = @device_measurement_id
       `);
 
@@ -72,33 +72,56 @@ router.get('/by-measurement/:measurementId', async (req, res) => {
 
     const video = result.recordset[0];
 
-    const accountName = process.env.AZURE_STORAGE_ACCOUNT_NAME;
-    const accountKey = process.env.AZURE_STORAGE_ACCOUNT_KEY;
+    // ---- credentials with fallback + logging ----
+    let { AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY, AZURE_STORAGE_CONNECTION_STRING } = process.env;
 
-    const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
-    const blobClient = blobServiceClient.getContainerClient(containerName).getBlobClient(video.file_name);
+    if ((!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) && AZURE_STORAGE_CONNECTION_STRING) {
+      const m = AZURE_STORAGE_CONNECTION_STRING.match(/AccountName=([^;]+);.*AccountKey=([^;]+)/i);
+      if (m) {
+        AZURE_STORAGE_ACCOUNT_NAME = m[1];
+        AZURE_STORAGE_ACCOUNT_KEY = m[2];
+      }
+    }
+    if (!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) {
+      console.error('Storage credentials missing. name?', !!AZURE_STORAGE_ACCOUNT_NAME, 'key?', !!AZURE_STORAGE_ACCOUNT_KEY);
+      return res.status(500).json({ error: 'Storage credentials missing on server' });
+    }
 
-    const sasToken = generateBlobSASQueryParameters({
-      containerName,
-      blobName: video.file_name,
-      permissions: BlobSASPermissions.parse('r'), // read only
-      protocol: SASProtocol.Https,
-      startsOn: new Date(),
-      expiresOn: new Date('2030-12-31T23:59:59Z')
-    }, sharedKeyCredential).toString();
+    const sharedKeyCredential = new StorageSharedKeyCredential(
+      AZURE_STORAGE_ACCOUNT_NAME,
+      AZURE_STORAGE_ACCOUNT_KEY
+    );
 
-    const sasUrl = `${blobClient.url}?${sasToken}`;
+    const blobClient = blobServiceClient
+      .getContainerClient(containerName)
+      .getBlobClient(video.file_name);
 
-    res.json({
-      ...video,
-      blob_url: sasUrl
-    });
+    // ---- clock skew buffer ----
+    const startsOn = new Date(Date.now() - 5 * 60 * 1000); // 5 דק' אחורה
+    const expiresOn = new Date('2030-12-31T23:59:59Z');
 
+    let sasToken;
+    try {
+      sasToken = generateBlobSASQueryParameters({
+        containerName,
+        blobName: video.file_name,
+        permissions: BlobSASPermissions.parse('r'),
+        protocol: SASProtocol.Https,
+        startsOn,
+        expiresOn
+      }, sharedKeyCredential).toString();
+    } catch (e) {
+      console.error('SAS generation error:', e?.message, e?.stack);
+      return res.status(500).json({ error: 'Failed to generate SAS URL' });
+    }
+
+    return res.json({ ...video, blob_url: `${blobClient.url}?${sasToken}` });
   } catch (err) {
     console.error('Fetch error:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message || 'Internal error' });
   }
 });
+
 
 
 // 📥 Get list of videos for a patient
