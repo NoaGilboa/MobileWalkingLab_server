@@ -1,301 +1,680 @@
+# 🏥 Mobile Walking Lab - Backend Server
 
-# 🧠 Mobile Walking Lab – Server
+A comprehensive Node.js/Express backend system for the Mobile Walking Lab, a physiotherapy assessment platform that integrates real-time gait analysis from ESP32 sensors, video recording, and AI-powered treatment recommendations.
 
-This is the **Node.js + Express** backend server for the Mobile Walking Lab system. It acts as a central API for managing patients, receiving ESP32 device data, providing GPT-based treatment recommendations, and storing structured data in an Azure SQL database.
+## 📋 Table of Contents
+- [Overview](#overview)
+- [System Architecture](#system-architecture)
+- [Key Features](#key-features)
+- [Technology Stack](#technology-stack)
+- [Project Structure](#project-structure)
+- [API Documentation](#api-documentation)
+- [ESP32 Integration](#esp32-integration)
+- [AI Treatment Recommendations](#ai-treatment-recommendations)
+- [Video Management](#video-management)
+- [Database Schema](#database-schema)
+- [Azure Deployment](#azure-deployment)
+- [Setup & Installation](#setup--installation)
+- [Testing](#testing)
+- [Environment Variables](#environment-variables)
 
----
+## 🔍 Overview
 
-## 🚀 Features
+The Mobile Walking Lab server acts as the central hub for a comprehensive gait analysis and physiotherapy system. It manages patient data, collects real-time measurements from ESP32 devices mounted on treadmills, stores video recordings of sessions, and provides AI-powered treatment recommendations based on collected data.
 
-* ✅ **Therapist authentication** (registration + login)
-* 👩‍⚕️ **Manage patient data** – add/update/delete/view
-* 📝 **Add and view therapist notes**
-* 📊 **Save walking speed measurements** (manual or from ESP32)
-* 🤖 **Generate GPT-based treatment recommendations** via OpenAI API
-* 📡 **ESP32 polling interface** (commands + upload measurements - speed, distance, foot lifts, and hand pressure)
-* 🧠 **Treatment insights** based on medical data + walking history
+### Core Responsibilities:
+- **Patient Management**: Complete CRUD operations for patient records
+- **Real-time Data Collection**: Receives and processes sensor data from ESP32 devices
+- **Video Storage**: Manages video recordings in Azure Blob Storage
+- **AI Analysis**: Generates treatment recommendations using OpenAI GPT-3.5
+- **Therapist Portal**: Authentication and session management for therapists
 
----
+## 🏗️ System Architecture
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Web Client    │────▶│  Node.js Server │◀────│   ESP32 Device  │
+│   (React App)   │     │    (Express)    │     │  (Treadmill)   │
+└─────────────────┘     └────────┬────────┘     └─────────────────┘
+                                 │
+                    ┌────────────┼────────────┐
+                    │            │            │
+            ┌───────▼──────┐ ┌──▼───┐ ┌──────▼──────┐
+            │ Azure SQL DB │ │OpenAI│ │Azure Blob   │
+            │              │ │ API  │ │Storage      │
+            └──────────────┘ └──────┘ └─────────────┘
+```
+
+## ✨ Key Features
+
+### 1. **Therapist Management**
+- Secure registration and authentication
+- Profile management with name updates
+- Session tracking
+
+### 2. **Patient Management**
+- Comprehensive patient profiles (demographics, medical conditions, mobility status)
+- Therapist notes with timestamps
+- Speed measurement history
+- Device measurement tracking
+
+### 3. **ESP32 Device Integration**
+- Real-time command polling (start/stop/idle)
+- Batch data upload for measurements
+- Multiple sensor data collection:
+  - Walking speed
+  - Distance traveled
+  - Hand pressure (left/right)
+  - Foot lift counts (left/right)
+
+### 4. **AI-Powered Treatment Recommendations**
+- Integration with OpenAI GPT-3.5
+- Analysis based on:
+  - Patient demographics and medical history
+  - Historical speed measurements
+  - ESP32 sensor data
+  - Therapist notes
+- Hebrew language support for recommendations
+
+### 5. **Video Management**
+- Upload patient session videos to Azure Blob Storage
+- Associate videos with device measurements
+- Secure access with SAS token generation
+- Retrieval by measurement ID
+
+## 🛠️ Technology Stack
+
+- **Runtime**: Node.js 18+
+- **Framework**: Express.js 5.1.0
+- **Database**: Azure SQL Database (MSSQL)
+- **Cloud Storage**: Azure Blob Storage
+- **AI**: OpenAI API (GPT-3.5-turbo)
+- **Authentication**: Custom implementation
+- **Testing**: Jest + Supertest
+- **File Upload**: Multer
+- **CORS**: Enabled for cross-origin requests
 
 ## 📁 Project Structure
 
 ```
 server/
 ├── config/
-│   └── db.js                   # Azure SQL DB config + schema initialization
-│
+│   └── db.js                   # Azure SQL connection & schema initialization
 ├── controllers/
-│   ├── deviceController.js     # ESP32 polling, data uploads
-│   ├── patientController.js    # Patient APIs (CRUD, notes, speed)
-│   └── therapistController.js  # Therapist login/register
-│
+│   ├── deviceController.js     # ESP32 command/data endpoints
+│   ├── patientController.js    # Patient CRUD & notes management
+│   ├── therapistController.js  # Authentication & therapist management
+│   └── videoController.js      # Video upload/retrieval endpoints
 ├── dataAccess/
-│   ├── deviceDataAccess.js     # SQL access for ESP32 measurements
-│   ├── patientDataAccess.js    # SQL access for patients + notes
-│   └── therapistDataAccess.js  # SQL access for therapists
-│
+│   ├── deviceDataAccess.js     # SQL queries for device data
+│   ├── patientDataAccess.js    # SQL queries for patient data
+│   └── therapistDataAccess.js  # SQL queries for therapist data
 ├── services/
-│   ├── deviceService.js        # Logic for device measurements
-│   ├── patientService.js       # Business logic for patient module
-│   └── openAIService.js        # GPT-3.5 logic for treatment recommendation
-│
-├── tests/                      # End‑to‑end & integration tests (Jest + Supertest)
+│   ├── deviceService.js        # Device data business logic
+│   ├── patientService.js       # Patient management logic
+│   ├── openAIService.js        # GPT integration for recommendations
+│   ├── therapistService.js     # Therapist authentication logic
+│   └── videoService.js         # Azure Blob Storage operations
+├── tests/
 │   ├── deviceController.test.js
 │   ├── patientController.test.js
 │   └── therapistController.test.js
-├── .env                        # API keys, DB credentials (ignored in Git)
-├── server.js                   # Main entrypoint – sets up Express, routes, DB
+├── .env                        # Environment variables
+├── server.js                   # Express app entry point
 └── package.json
 ```
----
----
 
-## 📡 ESP32 Communication
+## 📡 API Documentation
 
-### 🔁 Polling for Commands
+### Therapist Endpoints
 
-The ESP32 microcontroller polls the server every 3 seconds to get its current command:
+```javascript
+// Register new therapist
+POST /api/therapists/register
+Body: {
+  therapist_id: string,
+  name: string,
+  email: string,
+  password: string
+}
 
+// Login
+POST /api/therapists/login
+Body: {
+  email: string,
+  password: string
+}
+
+// Update therapist name
+PUT /api/therapists/:id/name
+Body: { name: string }
 ```
+
+### Patient Endpoints
+
+```javascript
+// Get all patients
+GET /api/patients
+
+// Get specific patient
+GET /api/patients/:id
+
+// Add new patient
+POST /api/patients
+Body: {
+  patient_id: string,
+  first_name: string,
+  last_name: string,
+  birth_date: date,
+  gender: string,
+  weight: number,
+  height: number,
+  phone: string,
+  email: string,
+  medical_condition: string,
+  mobility_status: string
+}
+
+// Update patient
+PUT /api/patients/:id
+
+// Delete patient
+DELETE /api/patients/:id
+
+// Patient notes
+GET /api/patients/:id/notes
+POST /api/patients/:id/notes
+Body: { therapistId: number, note: string }
+DELETE /api/patients/:id/notes
+
+// Speed measurements
+POST /api/patients/:id/speed
+Body: {
+  speed_kmh: number,
+  source: string,
+  foot_lift_count: number
+}
+GET /api/patients/:id/speed-history
+
+// AI treatment recommendation
+POST /api/patients/:id/treatment-recommendation
+```
+
+### Device (ESP32) Endpoints
+
+```javascript
+// Get current command (polled by ESP32)
 GET /api/device/command
-```
+Response: {
+  command: "start" | "stop" | "idle",
+  patientId: number
+}
 
-Returns:
-
-```json
-{ "command": "start" | "stop" | "idle", "patientId": number }
-```
-
-The command is set when a therapist presses "Start Measurement" or "Stop Measurement" on the client UI:
-
-```
+// Set command from frontend
 POST /api/device/command
-```
+Body: {
+  command: "start" | "stop" | "idle",
+  patientId: number
+}
 
-Payload:
-
-```json
-{ "command": "start", "patientId": 5 }
-```
-
-### 📤 Uploading ESP32 Measurements
-
-Once the ESP32 finishes recording, it sends all its buffered data:
-
-```
+// Upload measurement batch from ESP32
 POST /api/device/:id/data
-```
+Body: [{
+  speed: number,
+  distance: number,
+  handPressureL: number,
+  handPressureR: number,
+  footLiftL: number,
+  footLiftR: number
+}]
 
-Payload:
-
-```json
-[
-  {
-    "speed": 1.2,
-    "distance": 5.3,
-    "handPressureL": 7.8,
-    "handPressureR": 6.5,
-    "footLiftL": 2,
-    "footLiftR": 3
-  }
-]
-```
-
-These entries are inserted into the `device_measurements` table and linked to the patient.
-
-### 📥 Get All Device Measurements
-
-```
+// Retrieve all measurements
 GET /api/device/:id/measurements
-```
-
-Returns grouped data by field:
-
-```json
-{
-  "speed": [ { "value": 1.2, "measured_at": "..." }, ... ],
-  "distance": [...],
-  "handPressureL": [...],
-  "handPressureR": [...],
-  "footLiftL": [...],
-  "footLiftR": [...]
+Response: {
+  speed: [{value, measured_at}],
+  distance: [{value, measured_at}],
+  handPressureL: [{value, measured_at}],
+  handPressureR: [{value, measured_at}],
+  footLiftL: [{value, measured_at}],
+  footLiftR: [{value, measured_at}]
 }
 ```
 
-Stored in `device_measurements` table.
+### Video Endpoints
 
----
-## 🧪 Tests
+```javascript
+// Upload video
+POST /api/video/:id/upload-video
+Body: FormData with video file
+Optional: device_measurement_id
 
-This project ships with a comprehensive **integration‑test suite** written in **Jest** and **Supertest**. Each major controller is covered:
+// Get video by measurement ID
+GET /api/video/by-measurement/:measurementId
 
-| File                                | Coverage                                                            |
-| ----------------------------------- | ------------------------------------------------------------------- |
-| `tests/deviceController.test.js`    | Command polling, command validation, measurement upload & retrieval |
-| `tests/patientController.test.js`   | CRUD + notes, speed history, GPT recommendation endpoint            |
-| `tests/therapistController.test.js` | Therapist registration and login flows                              |
-
-### Running the test suite
-
-```bash
-# Install dev‑dependencies first (jest, supertest)
-npm i --save‑dev jest supertest
-
-# Execute all tests
-npm test
+// Get all videos for patient
+GET /api/video/:id/videos
 ```
 
-> **Tip:** The default `npm test` script in **package.json** already calls `jest --runInBand` so database connections close cleanly.
+## 🔌 ESP32 Integration
 
-### How it works
+### Communication Protocol
 
-* Each test connects to the **Azure SQL** instance defined in `.env` (or your local SQL Server) and spins up an **Express** app from `server.js`.
-* The `beforeAll` / `afterAll` hooks **seed** and **clean** the database so tests run in isolation.
-* Device tests simulate an ESP32 by calling the REST endpoints directly.
-* GPT recommendation test is marked with a **15 s timeout** to accommodate OpenAI latency; if the key is missing the test will skip gracefully.
+The ESP32 device continuously polls the server for commands and uploads collected data:
 
----
+#### 1. **Command Polling (Every 3 seconds)**
+```javascript
+// deviceController.js - Command management
+let currentCommand = {
+  command: 'idle',
+  patientId: null
+};
 
-
-## 📌 Sample API Routes
-
-| Method | Route                                        | Description                      |
-| ------ | -------------------------------------------- | -------------------------------- |
-| POST   | `/api/therapists/login`                      | Login therapist                  |
-| POST   | `/api/therapists/register`                   | Register therapist               |
-| GET    | `/api/patients`                              | Get all patients                 |
-| POST   | `/api/patients`                              | Add new patient                  |
-| GET    | `/api/patients/:id`                          | Get patient details              |
-| PUT    | `/api/patients/:id`                          | Update patient                   |
-| DELETE | `/api/patients/:id`                          | Delete patient                   |
-| GET    | `/api/patients/:id/notes`                    | Get patient notes                |
-| POST   | `/api/patients/:id/notes`                    | Add note                         |
-| DELETE | `/api/patients/:id/notes`                    | Delete all patient notes         |
-| GET    | `/api/patients/:id/speed-history`            | Get speed history                |
-| POST   | `/api/patients/:id/speed`                    | Save manual speed measurement    |
-| POST   | `/api/patients/:id/treatment-recommendation` | Get GPT treatment recommendation |
-| GET    | `/api/device/command`                        | ESP32 fetches command            |
-| POST   | `/api/device/command`                        | Set command from frontend        |
-| POST   | `/api/device/:id/data`                       | ESP32 uploads measurement batch  |
-| GET    | `/api/device/:id/measurements`               | Fetch all ESP32 measurements     |
-
----
-
-## 🧠 GPT Integration
-
-* Implemented using [OpenAI Node SDK](https://www.npmjs.com/package/openai)
-* API key stored in `.env` via `OPENAI_API_KEY`
-* Builds dynamic prompts based on:
-
-  * Age (calculated)
-  * Gender, height, weight, medical condition, mobility status
-  * Therapist notes
-* Manual speed history
-* **ESP32 sensor data**, including:
-
-  * speed
-  * distance
-  * hand pressure (left & right)
-  * number of foot lifts (left & right)
-
-These values are dynamically injected into a Hebrew prompt and submitted to GPT-3.5 to generate a physiotherapy recommendation.
-
-
-Example logic (see `openAIService.js`):
-
-```js
-const response = await openai.chat.completions.create({
-  model: "gpt-3.5-turbo",
-  messages: [
-    { role: "system", content: "אתה פיזיותרפיסט מומחה..." },
-    { role: "user", content: prompt },
-  ]
+router.get('/command', (req, res) => {
+  res.json({ command: currentCommand });
 });
 ```
 
----
+#### 2. **Data Upload Flow**
+```javascript
+// deviceController.js - Receiving ESP32 measurements
+router.post('/:id/data', async (req, res) => {
+  const patientId = parseInt(req.params.id);
+  const measurements = req.body; // Array of measurement objects
+  
+  await DeviceService.saveDeviceMeasurements(patientId, measurements);
+  res.json({ message: 'Measurements received', count: measurements.length });
+});
+```
 
-## 🧱 Database
+### Sensor Data Structure
+- **Speed**: Walking speed in m/s
+- **Distance**: Total distance covered in meters
+- **Hand Pressure L/R**: Pressure applied on treadmill handles (0-10 scale)
+- **Foot Lift L/R**: Number of times each foot lifted from surface
 
-* Uses **Azure SQL Database**
+## 🤖 AI Treatment Recommendations
 
-* All tables are initialized in `config/db.js` if they don’t exist:
+### OpenAI Integration
 
-  * `therapists`
-  * `patients`
-  * `patient_notes`
-  * `patient_speed_measurements`
-  * `device_measurements`
+The system uses GPT-3.5-turbo to generate personalized treatment recommendations:
 
-* Relationships:
+```javascript
+// openAIService.js - Core recommendation logic
+async function getTreatmentRecommendation(patientData) {
+  const prompt = `
+    מטופל במעבדת הליכה ניידת:
+    - גיל: ${age}
+    - מין: ${gender}
+    - משקל: ${weight} ק״ג
+    - גובה: ${height} ס״מ
+    - מצב רפואי: ${medical_condition}
+    - מצב ניידות: ${mobility_status}
+    - הערות קודמות: ${notesText}
+    - היסטוריית מהירויות הליכה: ${speedText}
+    - מדדים מהבקר: ${espText}
+    
+    בהתבסס על הנתונים הללו, תן המלצה טיפולית כללית לשיפור ההליכה...
+  `;
 
-  * `patient_notes`, `patient_speed_measurements` and `device_measurements` reference `patients`
-  * `patient_notes` also reference `therapists`
+  const response = await openai.chat.completions.create({
+    model: "gpt-3.5-turbo",
+    messages: [
+      { role: "system", content: "אתה פיזיותרפיסט מומחה..." },
+      { role: "user", content: prompt }
+    ],
+    max_tokens: 1500,
+    temperature: 0.7
+  });
 
----
+  return response.choices[0].message.content.trim();
+}
+```
+
+### Data Processing
+- Aggregates patient medical history
+- Processes ESP32 sensor readings
+- Formats therapist notes chronologically
+- Calculates age from birth date
+- Generates Hebrew-language recommendations
+
+## 📹 Video Management
+
+### Azure Blob Storage Integration
+
+```javascript
+// videoController.js - Video upload process
+router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
+  const fileName = `${patientId}_${Date.now()}_${file.originalname}`;
+  
+  // Upload to Azure Blob Storage
+  const blockBlobClient = containerClient.getBlockBlobClient(fileName);
+  await blockBlobClient.uploadData(file.buffer);
+  
+  // Store metadata in SQL
+  await pool.request()
+    .input('patient_id', sql.Int, patientId)
+    .input('file_name', sql.NVarChar, fileName)
+    .input('blob_url', sql.NVarChar, blockBlobClient.url)
+    .input('device_measurement_id', sql.Int, device_measurement_id)
+    .query(`INSERT INTO patient_videos...`);
+});
+```
+
+### SAS Token Generation
+Secure access to videos using time-limited SAS tokens:
+
+```javascript
+const sasToken = generateBlobSASQueryParameters({
+  containerName,
+  blobName: video.file_name,
+  permissions: BlobSASPermissions.parse('r'),
+  protocol: SASProtocol.Https,
+  startsOn: new Date(Date.now() - 5 * 60 * 1000),
+  expiresOn: new Date('2030-12-31T23:59:59Z')
+}, sharedKeyCredential).toString();
+```
+
+## 🗄️ Database Schema
+
+### Tables Structure
+
+```sql
+-- Therapists table
+CREATE TABLE therapists (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  therapist_id NVARCHAR(255) NOT NULL UNIQUE,
+  name NVARCHAR(255) NOT NULL,
+  email NVARCHAR(255) NOT NULL UNIQUE,
+  password NVARCHAR(255) NOT NULL
+);
+
+-- Patients table
+CREATE TABLE patients (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  patient_id NVARCHAR(255) NOT NULL UNIQUE,
+  first_name NVARCHAR(255) NOT NULL,
+  last_name NVARCHAR(255) NOT NULL,
+  birth_date DATE NOT NULL,
+  age AS DATEDIFF(YEAR, birth_date, GETDATE()),
+  gender NVARCHAR(50),
+  weight FLOAT,
+  height FLOAT,
+  phone NVARCHAR(20),
+  email NVARCHAR(255),
+  medical_condition NVARCHAR(MAX),
+  mobility_status NVARCHAR(100),
+  created_at DATETIME DEFAULT GETDATE(),
+  updated_at DATETIME
+);
+
+-- Patient notes
+CREATE TABLE patient_notes (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  patient_id INT NOT NULL,
+  therapist_id INT NOT NULL,
+  created_by_name NVARCHAR(255) NOT NULL,
+  note NVARCHAR(MAX),
+  created_at DATETIME DEFAULT GETDATE(),
+  FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+  FOREIGN KEY (therapist_id) REFERENCES therapists(id) ON DELETE CASCADE
+);
+
+-- Speed measurements
+CREATE TABLE patient_speed_measurements (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  patient_id INT NOT NULL,
+  speed_kmh FLOAT NOT NULL,
+  measured_at DATETIME DEFAULT GETDATE(),
+  source NVARCHAR(50) DEFAULT 'manual',
+  foot_lift_count INT NULL,
+  FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
+);
+
+-- Device measurements from ESP32
+CREATE TABLE device_measurements (
+  id INT IDENTITY(1,1) PRIMARY KEY,
+  patient_id INT NOT NULL,
+  measured_at DATETIME DEFAULT GETDATE(),
+  speed FLOAT NOT NULL,
+  distance FLOAT NOT NULL,
+  handPressureL FLOAT NOT NULL,
+  handPressureR FLOAT NOT NULL,
+  footLiftL INT NULL,
+  footLiftR INT NULL,
+  FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
+);
+
+-- Video storage metadata
+CREATE TABLE patient_videos (
+  id INT IDENTITY PRIMARY KEY,
+  patient_id INT NOT NULL,
+  device_measurement_id INT NULL,
+  file_name NVARCHAR(255) NOT NULL,
+  blob_url NVARCHAR(MAX) NOT NULL,
+  uploaded_at DATETIME DEFAULT GETDATE(),
+  FOREIGN KEY (patient_id) REFERENCES patients(id),
+  FOREIGN KEY (device_measurement_id) REFERENCES device_measurements(id) ON DELETE SET NULL
+);
+```
 
 ## ☁️ Azure Deployment
 
-To deploy:
+### Deployment via GitHub Actions
 
-1. Push your code to a GitHub repo
-2. Go to [Azure Portal](https://portal.azure.com)
-3. Create a Web App (Node.js runtime)
-4. Link deployment source to GitHub
-5. Configure environment variables (`OPENAI_API_KEY`, DB creds)
-6. Enable continuous deployment
+The project includes a GitHub Actions workflow for automatic deployment to Azure Web Apps:
 
-> You can also deploy manually using FTP or Azure CLI.
+```yaml
+# .github/workflows/azure-webapps-node.yml
+name: Deploy Node.js app to Azure Web App
 
----
+on:
+  push:
+    branches: [main]
 
-## 🔧 Setup Locally
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-node@v3
+      with:
+        node-version: '18.x'
+    - run: npm install
+    - uses: azure/webapps-deploy@v2
+      with:
+        app-name: walkinglab
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: .
+```
 
-### 1. Clone the repo
+### Azure Resources Required
+1. **Azure Web App** (Node.js 18 runtime)
+2. **Azure SQL Database**
+3. **Azure Blob Storage** (Container: `patient-videos`)
+4. **Application Settings** (Environment variables)
 
+### Manual Deployment Steps
+1. Create Azure Web App with Node.js runtime
+2. Configure deployment source (GitHub/Local Git)
+3. Set environment variables in Application Settings
+4. Enable CORS if needed
+5. Configure startup command: `node server.js`
+
+## 🚀 Setup & Installation
+
+### Prerequisites
+- Node.js 18+
+- Azure SQL Database instance
+- Azure Storage Account
+- OpenAI API key
+
+### Local Development Setup
+
+1. **Clone the repository**
 ```bash
 git clone https://github.com/NoaGilboa/Mobile-Walking-Lab.git
 cd Mobile-Walking-Lab/server
 ```
 
-### 2. Install dependencies
-
+2. **Install dependencies**
 ```bash
 npm install
 ```
 
-### 3. Configure `.env`
-
-```bash
-DB_USER=your_user
-DB_PASS=your_password
-DB_SERVER=your_server.database.windows.net
-DB_NAME=your_database
-OPENAI_API_KEY=your_openai_key
-```
-
-### 4. Run the server
-
-```bash
-node server.js
-```
-
----
-
-## ✅ Sample `.env`
-
-```
-DB_USER=noa123456
-DB_PASS=123456Noa
-DB_SERVER=your-server-name.database.windows.net
+3. **Configure environment variables**
+Create `.env` file:
+```env
+# Database Configuration
+DB_USER=your_azure_sql_user
+DB_PASS=your_azure_sql_password
+DB_SERVER=your-server.database.windows.net
 DB_NAME=walkinglabdb
-OPENAI_API_KEY=sk-...
+
+# OpenAI API
+OPENAI_API_KEY=sk-your-openai-key
+
+# Azure Storage
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
+AZURE_STORAGE_ACCOUNT_NAME=your_storage_account
+AZURE_STORAGE_ACCOUNT_KEY=your_storage_key
+
+# Server
+PORT=5001
 ```
----
 
-## 👩‍💻 Developed By
+4. **Initialize database**
+The database tables are automatically created on first connection via `config/db.js`
 
-**Noa Gilboa**
+5. **Run the server**
+```bash
+npm start
+```
+
+## 🧪 Testing
+
+### Test Suite Overview
+
+The project includes comprehensive integration tests using Jest and Supertest:
+
+```bash
+# Run all tests
+npm test
+
+# Test files:
+# - tests/deviceController.test.js    # ESP32 integration tests
+# - tests/patientController.test.js   # Patient management tests  
+# - tests/therapistController.test.js # Authentication tests
+```
+
+### Test Coverage
+- **Device Controller**: Command polling, validation, measurement upload
+- **Patient Controller**: CRUD operations, notes, speed history, AI recommendations
+- **Therapist Controller**: Registration, login, authentication flows
+
+### Test Database Setup
+Tests use the same Azure SQL instance with automatic cleanup:
+```javascript
+beforeAll(async () => {
+  await connectDB();
+  // Create test data
+});
+
+afterAll(async () => {
+  // Clean up test data
+  await sql.close();
+});
+```
+
+## 🔐 Environment Variables
+
+### Required Variables
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DB_USER` | Azure SQL username | `admin123` |
+| `DB_PASS` | Azure SQL password | `SecurePass123!` |
+| `DB_SERVER` | Azure SQL server URL | `myserver.database.windows.net` |
+| `DB_NAME` | Database name | `walkinglabdb` |
+| `OPENAI_API_KEY` | OpenAI API key | `sk-proj-...` |
+| `AZURE_STORAGE_CONNECTION_STRING` | Storage connection string | `DefaultEndpointsProtocol=https;...` |
+| `AZURE_STORAGE_ACCOUNT_NAME` | Storage account name | `walkinglab` |
+| `AZURE_STORAGE_ACCOUNT_KEY` | Storage account key | `base64key==` |
+| `PORT` | Server port | `5001` |
+
+## 🔧 Key Implementation Details
+
+### Database Connection Pool
+```javascript
+// config/db.js
+const config = {
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  server: process.env.DB_SERVER,
+  database: process.env.DB_NAME,
+  options: {
+    encrypt: true,  // Required for Azure
+    trustServerCertificate: false
+  }
+};
+```
+
+### Error Handling Pattern
+```javascript
+// Standard error handling in controllers
+try {
+  const result = await Service.method(params);
+  res.json(result);
+} catch (error) {
+  console.error("Error:", error);
+  res.status(500).json({ error: error.message });
+}
+```
+
+### Data Access Layer Pattern
+```javascript
+// Example from patientDataAccess.js
+static async getPatientById(id) {
+  try {
+    const pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query("SELECT * FROM patients WHERE id = @id;");
+    return result.recordset[0];
+  } catch (error) {
+    throw new Error(`Error retrieving patient: ${error.message}`);
+  }
+}
+```
+
+## 📱 Client Integration
+
+The server is designed to work with:
+1. **React Web Application**: Therapist dashboard for patient management
+2. **ESP32 Microcontroller**: Real-time sensor data collection
+3. **ESP32-CAM Module**: Video recording during sessions
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit changes (`git commit -m 'Add AmazingFeature'`)
+4. Push to branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 👩‍💻 Developer
+
+**Noa Gilboa**  
 [GitHub Profile](https://github.com/NoaGilboa)
 
+## 📄 License
 
+ISC License - See LICENSE file for details
+
+## 🙏 Acknowledgments
+
+- Azure for cloud infrastructure
+- OpenAI for GPT-3.5 API
+- ESP32 community for hardware integration support
+
+---
+
+*This server is part of the Mobile Walking Lab system, designed to revolutionize physiotherapy assessment through technology integration.*
