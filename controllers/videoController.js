@@ -142,6 +142,7 @@ router.get('/by-time', async (req, res) => {
       .input('patient_id', sql.Int, patientId)
       .input('tMin', sql.DateTime2, tMin)
       .input('tMax', sql.DateTime2, tMax)
+      .input('t', sql.DateTime2, t) 
       .query(`
         SELECT TOP 1 id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
         FROM patient_videos
