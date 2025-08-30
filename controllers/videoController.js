@@ -64,6 +64,7 @@ router.get('/by-measurement/:measurementId', async (req, res) => {
         SELECT TOP 1 id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
         FROM patient_videos
         WHERE device_measurement_id = @device_measurement_id
+        ORDER BY uploaded_at DESC, id DESC
       `);
 
     if (result.recordset.length === 0) {
