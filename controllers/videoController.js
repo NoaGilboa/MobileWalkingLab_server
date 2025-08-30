@@ -123,6 +123,65 @@ router.get('/by-measurement/:measurementId', async (req, res) => {
   }
 });
 
+// GET /video/by-time?patientId=2&t=2025-08-30T15:46:00.000Z&windowSec=900
+router.get('/by-time', async (req, res) => {
+  try {
+    const patientId = parseInt(req.query.patientId);
+    const t = new Date(req.query.t);
+    const windowSec = parseInt(req.query.windowSec || '900'); // ברירת מחדל 15 דק'
+
+    if (!patientId || isNaN(t.getTime())) {
+      return res.status(400).json({ error: 'patientId/t required' });
+    }
+
+    const tMin = new Date(t.getTime() - windowSec * 1000);
+    const tMax = new Date(t.getTime() + windowSec * 1000);
+
+    const pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('patient_id', sql.Int, patientId)
+      .input('tMin', sql.DateTime2, tMin)
+      .input('tMax', sql.DateTime2, tMax)
+      .query(`
+        SELECT TOP 1 id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
+        FROM patient_videos
+        WHERE patient_id = @patient_id
+          AND uploaded_at BETWEEN @tMin AND @tMax
+        ORDER BY ABS(DATEDIFF(SECOND, uploaded_at, @t)) ASC, uploaded_at DESC, id DESC
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'No video near that time' });
+    }
+
+    const video = result.recordset[0];
+
+    // צור SAS URL לקריאה
+    let { AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY, AZURE_STORAGE_CONNECTION_STRING } = process.env;
+    if ((!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) && AZURE_STORAGE_CONNECTION_STRING) {
+      const m = AZURE_STORAGE_CONNECTION_STRING.match(/AccountName=([^;]+);.*AccountKey=([^;]+)/i);
+      if (m) { AZURE_STORAGE_ACCOUNT_NAME = m[1]; AZURE_STORAGE_ACCOUNT_KEY = m[2]; }
+    }
+    const sharedKeyCredential = new StorageSharedKeyCredential(AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY);
+    const blobClient = blobServiceClient.getContainerClient(containerName).getBlobClient(video.file_name);
+
+    const startsOn = new Date(Date.now() - 5 * 60 * 1000);
+    const expiresOn = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    const sasToken = generateBlobSASQueryParameters({
+      containerName,
+      blobName: video.file_name,
+      permissions: BlobSASPermissions.parse('r'),
+      protocol: SASProtocol.Https,
+      startsOn,
+      expiresOn
+    }, sharedKeyCredential).toString();
+
+    res.json({ ...video, blob_url: `${blobClient.url}?${sasToken}` });
+  } catch (err) {
+    console.error('by-time error:', err);
+    res.status(500).json({ error: err.message || 'Internal error' });
+  }
+});
 
 
 // 📥 Get list of videos for a patient
