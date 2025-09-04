@@ -1,20 +1,30 @@
 const express = require('express');
 const multer = require('multer');
-const { generateBlobSASQueryParameters, BlobSASPermissions, SASProtocol, StorageSharedKeyCredential, BlobServiceClient } = require('@azure/storage-blob');
+const {
+  generateBlobSASQueryParameters,
+  BlobSASPermissions,
+  SASProtocol,
+  StorageSharedKeyCredential,
+  BlobServiceClient
+} = require('@azure/storage-blob');
 const sql = require('mssql');
 const dbConfig = require('../config/db');
 const { spawn } = require('child_process');
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+const path = require('path');
 
 const router = express.Router();
 const upload = multer(); // Upload in memory
 
+// ---------- Azure Blob setup ----------
 const AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
+if (!AZURE_STORAGE_CONNECTION_STRING) {
+  console.error('AZURE_STORAGE_CONNECTION_STRING is missing!');
+}
 const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING);
 const containerName = 'patient-videos';
 const containerClient = blobServiceClient.getContainerClient(containerName);
 
-// Ensure container exists
 async function ensureContainer() {
   const exists = await containerClient.exists();
   if (!exists) {
@@ -23,7 +33,223 @@ async function ensureContainer() {
 }
 ensureContainer();
 
-// Upload video for a patient
+// ---------- Helpers: Storage credentials / SAS ----------
+function getStorageCredsFromEnv() {
+  let {
+    AZURE_STORAGE_ACCOUNT_NAME,
+    AZURE_STORAGE_ACCOUNT_KEY,
+    AZURE_STORAGE_CONNECTION_STRING
+  } = process.env;
+
+  if ((!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) && AZURE_STORAGE_CONNECTION_STRING) {
+    const m = AZURE_STORAGE_CONNECTION_STRING.match(/AccountName=([^;]+);.*AccountKey=([^;]+)/i);
+    if (m) {
+      AZURE_STORAGE_ACCOUNT_NAME = m[1];
+      AZURE_STORAGE_ACCOUNT_KEY = m[2];
+    }
+  }
+  if (!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) {
+    throw new Error('Storage credentials missing on server');
+  }
+  return { AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY };
+}
+
+async function getReadSasForBlob(blobName, ttlSec = 3600) {
+  const { AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY } = getStorageCredsFromEnv();
+  const sharedKeyCredential = new StorageSharedKeyCredential(AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY);
+  const startsOn = new Date(Date.now() - 5 * 60 * 1000);
+  const expiresOn = new Date(Date.now() + ttlSec * 1000);
+  const sas = generateBlobSASQueryParameters({
+    containerName,
+    blobName,
+    permissions: BlobSASPermissions.parse('r'),
+    protocol: SASProtocol.Https,
+    startsOn,
+    expiresOn
+  }, sharedKeyCredential).toString();
+  const blobClient = blobServiceClient.getContainerClient(containerName).getBlobClient(blobName);
+  return `${blobClient.url}?${sas}`;
+}
+
+// ---------- Helpers: SQL fetch ----------
+async function getAllByMeasurement(measurementId) {
+  const pool = await sql.connect(dbConfig);
+  const result = await pool.request()
+    .input('device_measurement_id', sql.Int, measurementId)
+    .query(`
+      SELECT id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
+      FROM patient_videos
+      WHERE device_measurement_id = @device_measurement_id
+      ORDER BY uploaded_at ASC, id ASC
+    `);
+  return result.recordset || [];
+}
+
+async function getNearestByTime(patientId, t, windowSec) {
+  const tMin = new Date(t.getTime() - windowSec * 1000);
+  const tMax = new Date(t.getTime() + windowSec * 1000);
+  const pool = await sql.connect(dbConfig);
+  const result = await pool.request()
+    .input('patient_id', sql.Int, patientId)
+    .input('tMin', sql.DateTime2, tMin)
+    .input('tMax', sql.DateTime2, tMax)
+    .input('t',   sql.DateTime2, t)
+    .query(`
+      SELECT TOP 1 id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
+      FROM patient_videos
+      WHERE patient_id = @patient_id
+        AND uploaded_at BETWEEN @tMin AND @tMax
+      ORDER BY ABS(DATEDIFF(SECOND, uploaded_at, @t)) ASC, uploaded_at DESC, id DESC
+    `);
+  return result.recordset?.[0] || null;
+}
+
+async function getAllSegmentsForSameSessionIfAny(row) {
+  // אם יש device_measurement_id — זה האות הקשיח לסשן → נביא את כל הרשומות עבורו
+  if (row.device_measurement_id) {
+    const segments = await getAllByMeasurement(row.device_measurement_id);
+    return segments;
+  }
+  // אחרת ננסה לזהות לפי תבנית שם הקובץ של הבקר: "<patientId>_<sessionTs>_segmentN.ext"
+  // למשל: 2_1735996800_segment1.avi
+  const m = String(row.file_name).match(/^(\d+)_(\d+)_segment\d+\.(avi|mov|mp4)$/i);
+  if (m) {
+    const sessionTs = m[2];
+    const pool = await sql.connect(dbConfig);
+    const res = await pool.request()
+      .input('patient_id', sql.Int, row.patient_id)
+      .input('prefix', sql.NVarChar, `${row.patient_id}_${sessionTs}_segment`)
+      .query(`
+        SELECT id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
+        FROM patient_videos
+        WHERE patient_id = @patient_id
+          AND file_name LIKE @prefix + '%'
+        ORDER BY uploaded_at ASC, id ASC
+      `);
+    return res.recordset || [];
+  }
+  // לא זיהינו תבנית – נחזיר רק את הרשומה הבודדת
+  return [row];
+}
+
+// ---------- FFmpeg streaming: single URL ----------
+async function transcodeUrlToMp4Stream(sourceUrl, outFileName, res) {
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  try {
+    const head = await fetch(sourceUrl, { method: 'HEAD' });
+    if (!head.ok) {
+      return res.status(502).json({ error: 'Source video not accessible' });
+    }
+  } catch (e) {
+    return res.status(502).json({ error: 'Cannot access source video' });
+  }
+
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'info',
+    '-i', sourceUrl,
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast',
+    '-crf', '28',
+    '-pix_fmt', 'yuv420p',
+    '-profile:v', 'baseline',
+    '-level', '3.0',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-f', 'mp4',
+    '-an',
+    '-y',
+    'pipe:1'
+  ];
+
+  const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let errBuf = '';
+
+  ff.stderr.on('data', d => { errBuf += d.toString(); });
+  ff.stdout.pipe(res);
+
+  const kill = () => { try { ff.kill('SIGTERM'); } catch (_) {} setTimeout(() => { try { ff.kill('SIGKILL'); } catch(_){} }, 5000); };
+  res.on('close', kill);
+
+  ff.on('error', (e) => {
+    if (!res.headersSent) res.status(500).json({ error: 'FFmpeg process failed', details: e.message });
+  });
+  ff.on('close', (code) => {
+    if (code !== 0 && !res.headersSent) {
+      res.status(500).json({ error: 'Video conversion failed', details: errBuf });
+    }
+  });
+}
+
+// ---------- FFmpeg streaming: multiple URLs concat ----------
+async function transcodeMultipleUrlsToMp4Stream(urls, outFileName, res) {
+  if (!urls || urls.length === 0) {
+    return res.status(400).json({ error: 'No segments to merge' });
+  }
+
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // (אופציונלי) בדיקת HEAD לכל URL לוודא נגישות
+  try {
+    const checks = await Promise.all(urls.map(u => fetch(u, { method: 'HEAD' })));
+    const bad = checks.find(r => !r.ok);
+    if (bad) return res.status(502).json({ error: 'One or more segment URLs are not accessible' });
+  } catch (e) {
+    return res.status(502).json({ error: 'Failed to access one or more segment URLs' });
+  }
+
+  // בונים את ארגומנטי הקלט (-i לכל מקור)
+  const ffArgs = ['-hide_banner', '-loglevel', 'info'];
+  urls.forEach(u => { ffArgs.push('-i', u); });
+
+  // בונים filter_complex ל־concat
+  // לדוגמה עבור N=3: "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]"
+  const n = urls.length;
+  const inputs = Array.from({ length: n }, (_, i) => `[${i}:v]`).join('');
+  const filter = `${inputs}concat=n=${n}:v=1:a=0[v]`;
+
+  ffArgs.push(
+    '-filter_complex', filter,
+    '-map', '[v]',
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast',
+    '-crf', '28',
+    '-pix_fmt', 'yuv420p',
+    '-profile:v', 'baseline',
+    '-level', '3.0',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-f', 'mp4',
+    '-an',
+    '-y',
+    'pipe:1'
+  );
+
+  const ff = spawn(ffmpegPath, ffArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let errBuf = '';
+
+  ff.stderr.on('data', d => { errBuf += d.toString(); });
+  ff.stdout.pipe(res);
+
+  const kill = () => { try { ff.kill('SIGTERM'); } catch (_) {} setTimeout(() => { try { ff.kill('SIGKILL'); } catch(_){} }, 5000); };
+  res.on('close', kill);
+
+  ff.on('error', (e) => {
+    if (!res.headersSent) res.status(500).json({ error: 'FFmpeg concat failed', details: e.message });
+  });
+  ff.on('close', (code) => {
+    if (code !== 0 && !res.headersSent) {
+      res.status(500).json({ error: 'Video concat failed', details: errBuf });
+    }
+  });
+}
+
+// ---------- Upload video for a patient ----------
 router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
   const patientId = parseInt(req.params.id);
   const file = req.file;
@@ -42,7 +268,7 @@ router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
       .input('patient_id', sql.Int, patientId)
       .input('file_name', sql.NVarChar, fileName)
       .input('blob_url', sql.NVarChar, blockBlobClient.url)
-      .input('device_measurement_id', sql.Int, device_measurement_id || null) 
+      .input('device_measurement_id', sql.Int, device_measurement_id || null)
       .query(`
         INSERT INTO patient_videos (patient_id, file_name, blob_url, device_measurement_id)
         VALUES (@patient_id, @file_name, @blob_url, @device_measurement_id)
@@ -55,153 +281,93 @@ router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
   }
 });
 
-// Get video by device measurement ID
+// ---------- JSON: Get by measurement (single or merged) ----------
 router.get('/by-measurement/:measurementId', async (req, res) => {
-  const measurementId = parseInt(req.params.measurementId);
   try {
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request()
-      .input('device_measurement_id', sql.Int, measurementId)
-      .query(`
-        SELECT TOP 1 id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
-        FROM patient_videos
-        WHERE device_measurement_id = @device_measurement_id
-        ORDER BY uploaded_at DESC, id DESC
-      `);
+    const measurementId = parseInt(req.params.measurementId);
+    const rows = await getAllByMeasurement(measurementId);
 
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'No video found for this measurement' });
+    if (!rows.length) return res.status(404).json({ error: 'No video found for this measurement' });
+
+    if (rows.length === 1) {
+      // קטע יחיד → נחזיר SAS לינק רגיל + לינק סטרים MP4 אופציונלי
+      const fileName = rows[0].file_name;
+      const sasUrl = await getReadSasForBlob(fileName, 24 * 3600);
+      const outName = fileName.replace(/\.(avi|mov)$/i, '.mp4');
+      return res.json({
+        type: 'single',
+        file_name: fileName,
+        blob_url: sasUrl,
+        mp4_stream_url: `/api/video/stream/by-file/${encodeURIComponent(fileName)}.mp4`
+      });
     }
 
-    const video = result.recordset[0];
-
-    // ---- credentials with fallback + logging ----
-    let { AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY, AZURE_STORAGE_CONNECTION_STRING } = process.env;
-
-    if ((!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) && AZURE_STORAGE_CONNECTION_STRING) {
-      const m = AZURE_STORAGE_CONNECTION_STRING.match(/AccountName=([^;]+);.*AccountKey=([^;]+)/i);
-      if (m) {
-        AZURE_STORAGE_ACCOUNT_NAME = m[1];
-        AZURE_STORAGE_ACCOUNT_KEY = m[2];
-      }
-    }
-    if (!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) {
-      console.error('Storage credentials missing. name?', !!AZURE_STORAGE_ACCOUNT_NAME, 'key?', !!AZURE_STORAGE_ACCOUNT_KEY);
-      return res.status(500).json({ error: 'Storage credentials missing on server' });
-    }
-
-    const sharedKeyCredential = new StorageSharedKeyCredential(
-      AZURE_STORAGE_ACCOUNT_NAME,
-      AZURE_STORAGE_ACCOUNT_KEY
-    );
-
-    const blobClient = blobServiceClient
-      .getContainerClient(containerName)
-      .getBlobClient(video.file_name);
-
-    // ---- clock skew buffer ----
-    const startsOn = new Date(Date.now() - 5 * 60 * 1000); // 5 דק' אחורה
-    const expiresOn = new Date('2030-12-31T23:59:59Z');
-
-    let sasToken;
-    try {
-      sasToken = generateBlobSASQueryParameters({
-        containerName,
-        blobName: video.file_name,
-        permissions: BlobSASPermissions.parse('r'),
-        protocol: SASProtocol.Https,
-        startsOn,
-        expiresOn
-      }, sharedKeyCredential).toString();
-    } catch (e) {
-      console.error('SAS generation error:', e?.message, e?.stack);
-      return res.status(500).json({ error: 'Failed to generate SAS URL' });
-    }
-
-    return res.json({ ...video, blob_url: `${blobClient.url}?${sasToken}` });
+    // כמה מקטעים → נחזיר URL סטרים מאוחד
+    return res.json({
+      type: 'merged',
+      combined_stream_url: `/api/video/stream/concat/by-measurement/${measurementId}.mp4`,
+      count: rows.length
+    });
   } catch (err) {
-    console.error('Fetch error:', err);
-    return res.status(500).json({ error: err.message || 'Internal error' });
+    console.error('by-measurement error:', err);
+    res.status(500).json({ error: err.message || 'Internal error' });
   }
 });
 
-// GET /video/by-time?patientId=2&t=2025-08-30T15:46:00.000Z&windowSec=900
+// ---------- JSON: Get by time (single or merged) ----------
 router.get('/by-time', async (req, res) => {
   try {
     const patientId = parseInt(req.query.patientId);
     const t = new Date(req.query.t);
-    const windowSec = parseInt(req.query.windowSec || '900'); // ברירת מחדל 15 דק'
+    const windowSec = parseInt(req.query.windowSec || '900');
 
     if (!patientId || isNaN(t.getTime())) {
       return res.status(400).json({ error: 'patientId/t required' });
     }
 
-    const tMin = new Date(t.getTime() - windowSec * 1000);
-    const tMax = new Date(t.getTime() + windowSec * 1000);
+    const nearest = await getNearestByTime(patientId, t, windowSec);
+    if (!nearest) return res.status(404).json({ error: 'No video near that time' });
 
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request()
-      .input('patient_id', sql.Int, patientId)
-      .input('tMin', sql.DateTime2, tMin)
-      .input('tMax', sql.DateTime2, tMax)
-      .input('t', sql.DateTime2, t) 
-      .query(`
-        SELECT TOP 1 id, patient_id, file_name, blob_url, device_measurement_id, uploaded_at
-        FROM patient_videos
-        WHERE patient_id = @patient_id
-          AND uploaded_at BETWEEN @tMin AND @tMax
-        ORDER BY ABS(DATEDIFF(SECOND, uploaded_at, @t)) ASC, uploaded_at DESC, id DESC
-      `);
+    // השג את כל המקטעים של אותו סשן (אם יש)
+    const segments = await getAllSegmentsForSameSessionIfAny(nearest);
 
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'No video near that time' });
+    if (segments.length <= 1) {
+      const fileName = nearest.file_name;
+      const sasUrl = await getReadSasForBlob(fileName, 24 * 3600);
+      return res.json({
+        type: 'single',
+        file_name: fileName,
+        blob_url: sasUrl,
+        mp4_stream_url: `/api/video/stream/by-file/${encodeURIComponent(fileName)}.mp4`
+      });
     }
 
-    const video = result.recordset[0];
+    // יש כמה מקטעים → סטרימינג מאוחד לפי זמן
+    return res.json({
+      type: 'merged',
+      combined_stream_url: `/api/video/stream/concat/by-time.mp4?patientId=${patientId}&t=${encodeURIComponent(t.toISOString())}&windowSec=${windowSec}`,
+      count: segments.length
+    });
 
-    // צור SAS URL לקריאה
-    let { AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY, AZURE_STORAGE_CONNECTION_STRING } = process.env;
-    if ((!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) && AZURE_STORAGE_CONNECTION_STRING) {
-      const m = AZURE_STORAGE_CONNECTION_STRING.match(/AccountName=([^;]+);.*AccountKey=([^;]+)/i);
-      if (m) { AZURE_STORAGE_ACCOUNT_NAME = m[1]; AZURE_STORAGE_ACCOUNT_KEY = m[2]; }
-    }
-    const sharedKeyCredential = new StorageSharedKeyCredential(AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY);
-    const blobClient = blobServiceClient.getContainerClient(containerName).getBlobClient(video.file_name);
-
-    const startsOn = new Date(Date.now() - 5 * 60 * 1000);
-    const expiresOn = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
-    const sasToken = generateBlobSASQueryParameters({
-      containerName,
-      blobName: video.file_name,
-      permissions: BlobSASPermissions.parse('r'),
-      protocol: SASProtocol.Https,
-      startsOn,
-      expiresOn
-    }, sharedKeyCredential).toString();
-
-    res.json({ ...video, blob_url: `${blobClient.url}?${sasToken}` });
   } catch (err) {
     console.error('by-time error:', err);
     res.status(500).json({ error: err.message || 'Internal error' });
   }
 });
 
-
-// 📥 Get list of videos for a patient
+// ---------- List all videos for a patient ----------
 router.get('/:id/videos', async (req, res) => {
   const patientId = parseInt(req.params.id);
-
   try {
     const pool = await sql.connect(dbConfig);
     const result = await pool.request()
       .input('patient_id', sql.Int, patientId)
       .query(`
-        SELECT id, file_name, blob_url, uploaded_at
+        SELECT id, file_name, blob_url, uploaded_at, device_measurement_id
         FROM patient_videos
         WHERE patient_id = @patient_id
         ORDER BY uploaded_at DESC
       `);
-
     res.json(result.recordset);
   } catch (err) {
     console.error('Fetch error:', err);
@@ -209,346 +375,77 @@ router.get('/:id/videos', async (req, res) => {
   }
 });
 
-async function getReadSasForBlob(blobName, ttlSec = 3600) {
-  let { AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY, AZURE_STORAGE_CONNECTION_STRING } = process.env;
-  if ((!AZURE_STORAGE_ACCOUNT_NAME || !AZURE_STORAGE_ACCOUNT_KEY) && AZURE_STORAGE_CONNECTION_STRING) {
-    const m = AZURE_STORAGE_CONNECTION_STRING.match(/AccountName=([^;]+);.*AccountKey=([^;]+)/i);
-    if (m) { AZURE_STORAGE_ACCOUNT_NAME = m[1]; AZURE_STORAGE_ACCOUNT_KEY = m[2]; }
-  }
-  const sharedKeyCredential = new StorageSharedKeyCredential(AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ACCOUNT_KEY);
-  const startsOn = new Date(Date.now() - 5 * 60 * 1000);
-  const expiresOn = new Date(Date.now() + ttlSec * 1000);
-  const sas = generateBlobSASQueryParameters({
-    containerName,
-    blobName,
-    permissions: BlobSASPermissions.parse('r'),
-    protocol: SASProtocol.Https,
-    startsOn,
-    expiresOn
-  }, sharedKeyCredential).toString();
-  const blobClient = blobServiceClient.getContainerClient(containerName).getBlobClient(blobName);
-  return `${blobClient.url}?${sas}`;
-}
-
-// פונקציה משופרת להמרת וידאו עם debug טוב יותר
-async function transcodeUrlToMp4Stream(aviUrl, outFileName, res) {
-  console.log('Starting transcode for:', aviUrl);
-  
-  res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-
-  // ראשית, בואו נבדוק שה-URL נגיש
+// ---------- STREAM: single file name → MP4 (on-the-fly) ----------
+router.get('/stream/by-file/:encodedFileName.mp4', async (req, res) => {
   try {
-    const testResponse = await fetch(aviUrl, { method: 'HEAD' });
-    if (!testResponse.ok) {
-      console.error('Source URL not accessible:', testResponse.status);
-      return res.status(500).json({ error: 'Source video not accessible' });
-    }
-    console.log('Source URL accessible, content-length:', testResponse.headers.get('content-length'));
+    const encoded = req.params.encodedFileName; // כאן זה ה־file_name המקורי כשהוא מוצפן ל-URL
+    const file_name = decodeURIComponent(encoded);
+    const sourceUrl = await getReadSasForBlob(file_name, 3600);
+
+    const base = path.basename(file_name);
+    const outName = base.replace(/\.(avi|mov)$/i, '.mp4');
+    await transcodeUrlToMp4Stream(sourceUrl, outName, res);
   } catch (err) {
-    console.error('Error testing source URL:', err);
-    return res.status(500).json({ error: 'Cannot access source video' });
-  }
-
-  // הגדרות ffmpeg משופרות
-  const args = [
-    '-hide_banner', 
-    '-loglevel', 'info', // שנה ל-info כדי לראות יותר פרטים
-    '-i', aviUrl,
-    '-c:v', 'libx264',
-    '-preset', 'ultrafast', // מהיר יותר מ-veryfast
-    '-crf', '28', // איכות קצת יותר נמוכה למהירות
-    '-pix_fmt', 'yuv420p',
-    '-profile:v', 'baseline', // פרופיל בסיסי לתאימות טובה יותר
-    '-level', '3.0',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof', // שיפור לסטרימינג
-    '-f', 'mp4',
-    '-an', // ללא אודיו
-    '-y', // overwrite
-    'pipe:1'
-  ];
-
-  console.log('FFmpeg command:', ffmpegPath, args.join(' '));
-
-  const ff = spawn(ffmpegPath, args, {
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-
-  let errorOutput = '';
-
-  ff.stderr.on('data', (data) => {
-    const output = data.toString();
-    errorOutput += output;
-    console.log('FFmpeg stderr:', output);
-  });
-
-  ff.stdout.on('data', (chunk) => {
-    console.log('FFmpeg output chunk size:', chunk.length);
-  });
-
-  ff.stdout.pipe(res);
-
-  ff.on('close', (code) => {
-    console.log('FFmpeg process closed with code:', code);
-    if (code !== 0) {
-      console.error('FFmpeg stderr output:', errorOutput);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Video conversion failed', details: errorOutput });
-      }
-    }
-  });
-
-  ff.on('error', (err) => {
-    console.error('FFmpeg process error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'FFmpeg process failed', details: err.message });
-    }
-  });
-
-  // ניקוי כשהלקוח מתנתק
-  res.on('close', () => {
-    console.log('Client disconnected, killing FFmpeg process');
-    ff.kill('SIGTERM');
-    setTimeout(() => {
-      ff.kill('SIGKILL');
-    }, 5000);
-  });
-}
-
-// פונקציה חלופית - המרה דרך temp file (אם הסטרימינג לא עובד)
-async function transcodeToTempMp4(aviUrl, outFileName, res) {
-  const tempDir = require('os').tmpdir();
-  const path = require('path');
-  const fs = require('fs').promises;
-  
-  const tempInput = path.join(tempDir, `temp_input_${Date.now()}.avi`);
-  const tempOutput = path.join(tempDir, `temp_output_${Date.now()}.mp4`);
-
-  try {
-    // הורד את הקובץ המקור לtemp
-    console.log('Downloading source file...');
-    const response = await fetch(aviUrl);
-    if (!response.ok) throw new Error('Failed to fetch source');
-    
-    const buffer = await response.buffer();
-    await fs.writeFile(tempInput, buffer);
-    console.log('Source downloaded to temp:', tempInput);
-
-    // המר באמצעות ffmpeg
-    const args = [
-      '-hide_banner',
-      '-loglevel', 'info',
-      '-i', tempInput,
-      '-c:v', 'libx264',
-      '-preset', 'fast',
-      '-crf', '23',
-      '-pix_fmt', 'yuv420p',
-      '-profile:v', 'baseline',
-      '-level', '3.0',
-      '-movflags', '+faststart',
-      '-an',
-      '-y',
-      tempOutput
-    ];
-
-    console.log('Running FFmpeg conversion...');
-    
-    const ff = spawn(ffmpegPath, args);
-    
-    ff.stderr.on('data', (data) => {
-      console.log('FFmpeg:', data.toString());
-    });
-
-    await new Promise((resolve, reject) => {
-      ff.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`FFmpeg exited with code ${code}`));
-      });
-      ff.on('error', reject);
-    });
-
-    // שלח את הקובץ המומר
-    const convertedBuffer = await fs.readFile(tempOutput);
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
-    res.setHeader('Content-Length', convertedBuffer.length);
-    res.send(convertedBuffer);
-
-    // נקה temp files
-    await fs.unlink(tempInput).catch(() => {});
-    await fs.unlink(tempOutput).catch(() => {});
-
-  } catch (err) {
-    console.error('Temp conversion error:', err);
-    
-    // נקה temp files במקרה של שגיאה
-    await fs.unlink(tempInput).catch(() => {});
-    await fs.unlink(tempOutput).catch(() => {});
-    
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message });
-    }
-  }
-}
-
-// endpoints משופרים
-router.get('/stream/by-measurement/:measurementId.mp4', async (req, res) => {
-  try {
-    const measurementId = parseInt(req.params.measurementId);
-    const useTemp = req.query.temp === 'true'; // להוסיף ?temp=true לבדיקה
-    
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request()
-      .input('device_measurement_id', sql.Int, measurementId)
-      .query(`
-        SELECT TOP 1 file_name, uploaded_at
-        FROM patient_videos
-        WHERE device_measurement_id = @device_measurement_id
-        ORDER BY uploaded_at DESC, id DESC
-      `);
-      
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'No video found' });
-    }
-
-    const { file_name } = result.recordset[0];
-    const aviUrl = await getReadSasForBlob(file_name, 3600);
-    const outName = file_name.replace(/\.avi$/i, '.mp4');
-    
-    console.log('Processing video:', { file_name, aviUrl: aviUrl.substring(0, 100) + '...' });
-    
-    if (useTemp) {
-      await transcodeToTempMp4(aviUrl, outName, res);
-    } else {
-      await transcodeUrlToMp4Stream(aviUrl, outName, res);
-    }
-    
-  } catch (err) {
-    console.error('Stream by-measurement error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message || 'Internal error' });
-    }
+    console.error('stream by-file error:', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Internal error' });
   }
 });
 
-router.get('/stream/by-time.mp4', async (req, res) => {
+// ---------- STREAM: concat by measurement → MP4 ----------
+router.get('/stream/concat/by-measurement/:measurementId.mp4', async (req, res) => {
+  try {
+    const measurementId = parseInt(req.params.measurementId);
+    const rows = await getAllByMeasurement(measurementId);
+    if (!rows.length) return res.status(404).json({ error: 'No video found' });
+
+    if (rows.length === 1) {
+      // קטע יחיד – אם בכל זאת פנו לנתיב קונקט נחזיר פשוט סטרים MP4 שלו
+      const fileName = rows[0].file_name;
+      const sourceUrl = await getReadSasForBlob(fileName, 3600);
+      const outName = path.basename(fileName).replace(/\.(avi|mov)$/i, '.mp4');
+      return transcodeUrlToMp4Stream(sourceUrl, outName, res);
+    }
+
+    const urls = await Promise.all(rows.map(r => getReadSasForBlob(r.file_name, 3600)));
+    const outName = `measurement_${measurementId}.mp4`;
+    await transcodeMultipleUrlsToMp4Stream(urls, outName, res);
+  } catch (err) {
+    console.error('concat by-measurement error:', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Internal error' });
+  }
+});
+
+// ---------- STREAM: concat by time → MP4 ----------
+router.get('/stream/concat/by-time.mp4', async (req, res) => {
   try {
     const patientId = parseInt(req.query.patientId);
     const t = new Date(req.query.t);
     const windowSec = parseInt(req.query.windowSec || '900');
-    const useTemp = req.query.temp === 'true';
-    
+
     if (!patientId || isNaN(t.getTime())) {
       return res.status(400).json({ error: 'patientId/t required' });
     }
-    
-    const tMin = new Date(t.getTime() - windowSec * 1000);
-    const tMax = new Date(t.getTime() + windowSec * 1000);
 
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request()
-      .input('patient_id', sql.Int, patientId)
-      .input('tMin', sql.DateTime2, tMin)
-      .input('tMax', sql.DateTime2, tMax)
-      .input('t', sql.DateTime2, t)
-      .query(`
-        SELECT TOP 1 file_name, uploaded_at
-        FROM patient_videos
-        WHERE patient_id = @patient_id
-          AND uploaded_at BETWEEN @tMin AND @tMax
-        ORDER BY ABS(DATEDIFF(SECOND, uploaded_at, @t)) ASC, uploaded_at DESC, id DESC
-      `);
-      
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'No video near that time' });
+    const nearest = await getNearestByTime(patientId, t, windowSec);
+    if (!nearest) return res.status(404).json({ error: 'No video near that time' });
+
+    const segments = await getAllSegmentsForSameSessionIfAny(nearest);
+    if (!segments.length) return res.status(404).json({ error: 'No segments found' });
+
+    if (segments.length === 1) {
+      const fileName = segments[0].file_name;
+      const sourceUrl = await getReadSasForBlob(fileName, 3600);
+      const outName = path.basename(fileName).replace(/\.(avi|mov)$/i, '.mp4');
+      return transcodeUrlToMp4Stream(sourceUrl, outName, res);
     }
 
-    const { file_name } = result.recordset[0];
-    const aviUrl = await getReadSasForBlob(file_name, 3600);
-    const outName = file_name.replace(/\.avi$/i, '.mp4');
-    
-    if (useTemp) {
-      await transcodeToTempMp4(aviUrl, outName, res);
-    } else {
-      await transcodeUrlToMp4Stream(aviUrl, outName, res);
-    }
-    
+    const urls = await Promise.all(segments.map(r => getReadSasForBlob(r.file_name, 3600)));
+    const outName = `patient_${patientId}_combined.mp4`;
+    await transcodeMultipleUrlsToMp4Stream(urls, outName, res);
   } catch (err) {
-    console.error('Stream by-time error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message || 'Internal error' });
-    }
+    console.error('concat by-time error:', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Internal error' });
   }
 });
-
-
-// =====================
-//  A) STREAM BY MEASUREMENT → MP4
-// =====================
-router.get('/stream/by-measurement/:measurementId.mp4', async (req, res) => {
-  try {
-    const measurementId = parseInt(req.params.measurementId);
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request()
-      .input('device_measurement_id', sql.Int, measurementId)
-      .query(`
-        SELECT TOP 1 file_name, uploaded_at
-        FROM patient_videos
-        WHERE device_measurement_id = @device_measurement_id
-        ORDER BY uploaded_at DESC, id DESC
-      `);
-    if (result.recordset.length === 0) return res.status(404).json({ error: 'No video found' });
-
-    const { file_name } = result.recordset[0];
-    const aviUrl = await getReadSasForBlob(file_name, 3600);
-    const outName = file_name.replace(/\.avi$/i, '.mp4');
-    transcodeUrlToMp4Stream(aviUrl, outName, res);
-  } catch (err) {
-    console.error('stream by-measurement error:', err);
-    res.status(500).json({ error: err.message || 'Internal error' });
-  }
-});
-
-// =====================
-//  B) STREAM BY TIME → MP4
-// =====================
-router.get('/stream/by-time.mp4', async (req, res) => {
-  try {
-    const patientId = parseInt(req.query.patientId);
-    const t = new Date(req.query.t);
-    const windowSec = parseInt(req.query.windowSec || '900');
-    if (!patientId || isNaN(t.getTime())) {
-      return res.status(400).json({ error: 'patientId/t required' });
-    }
-    const tMin = new Date(t.getTime() - windowSec * 1000);
-    const tMax = new Date(t.getTime() + windowSec * 1000);
-
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request()
-      .input('patient_id', sql.Int, patientId)
-      .input('tMin', sql.DateTime2, tMin)
-      .input('tMax', sql.DateTime2, tMax)
-      .input('t',   sql.DateTime2, t)
-      .query(`
-        SELECT TOP 1 file_name, uploaded_at
-        FROM patient_videos
-        WHERE patient_id = @patient_id
-          AND uploaded_at BETWEEN @tMin AND @tMax
-        ORDER BY ABS(DATEDIFF(SECOND, uploaded_at, @t)) ASC, uploaded_at DESC, id DESC
-      `);
-    if (result.recordset.length === 0) return res.status(404).json({ error: 'No video near that time' });
-
-    const { file_name } = result.recordset[0];
-    const aviUrl = await getReadSasForBlob(file_name, 3600);
-    const outName = file_name.replace(/\.avi$/i, '.mp4');
-    transcodeUrlToMp4Stream(aviUrl, outName, res);
-  } catch (err) {
-    console.error('stream by-time error:', err);
-    res.status(500).json({ error: err.message || 'Internal error' });
-  }
-});
-
 
 module.exports = router;
