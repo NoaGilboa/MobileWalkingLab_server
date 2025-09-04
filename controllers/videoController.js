@@ -230,48 +230,259 @@ async function getReadSasForBlob(blobName, ttlSec = 3600) {
   return `${blobClient.url}?${sas}`;
 }
 
-function transcodeUrlToMp4Stream(aviUrl, outFileName, res) {
+// פונקציה משופרת להמרת וידאו עם debug טוב יותר
+async function transcodeUrlToMp4Stream(aviUrl, outFileName, res) {
+  console.log('Starting transcode for:', aviUrl);
+  
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
 
-  // הערות:
-  // - MJPEG מקור: אין אודיו → -an
-  // - דגלי streaming: frag_keyframe+empty_moov כדי להתחיל לנגן לפני סוף הקובץ
-  // - yuv420p לשיפור תאימות (Safari/iOS)
+  // ראשית, בואו נבדוק שה-URL נגיש
+  try {
+    const testResponse = await fetch(aviUrl, { method: 'HEAD' });
+    if (!testResponse.ok) {
+      console.error('Source URL not accessible:', testResponse.status);
+      return res.status(500).json({ error: 'Source video not accessible' });
+    }
+    console.log('Source URL accessible, content-length:', testResponse.headers.get('content-length'));
+  } catch (err) {
+    console.error('Error testing source URL:', err);
+    return res.status(500).json({ error: 'Cannot access source video' });
+  }
+
+  // הגדרות ffmpeg משופרות
   const args = [
-    '-hide_banner', '-loglevel', 'error',
-    '-re', // אופציונלי; אפשר גם בלי
+    '-hide_banner', 
+    '-loglevel', 'info', // שנה ל-info כדי לראות יותר פרטים
     '-i', aviUrl,
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast', // מהיר יותר מ-veryfast
+    '-crf', '28', // איכות קצת יותר נמוכה למהירות
     '-pix_fmt', 'yuv420p',
-    '-movflags', 'frag_keyframe+empty_moov+faststart',
-    '-an',
+    '-profile:v', 'baseline', // פרופיל בסיסי לתאימות טובה יותר
+    '-level', '3.0',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof', // שיפור לסטרימינג
     '-f', 'mp4',
+    '-an', // ללא אודיו
+    '-y', // overwrite
     'pipe:1'
   ];
-  const ff = spawn(ffmpegPath, args);
+
+  console.log('FFmpeg command:', ffmpegPath, args.join(' '));
+
+  const ff = spawn(ffmpegPath, args, {
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let errorOutput = '';
+
+  ff.stderr.on('data', (data) => {
+    const output = data.toString();
+    errorOutput += output;
+    console.log('FFmpeg stderr:', output);
+  });
+
+  ff.stdout.on('data', (chunk) => {
+    console.log('FFmpeg output chunk size:', chunk.length);
+  });
 
   ff.stdout.pipe(res);
-  ff.stderr.on('data', (d) => console.warn('ffmpeg:', d.toString()));
+
   ff.on('close', (code) => {
+    console.log('FFmpeg process closed with code:', code);
     if (code !== 0) {
-      if (!res.headersSent) res.status(500);
-      try { res.end(); } catch(_) {}
-      console.error('ffmpeg exited with code', code);
+      console.error('FFmpeg stderr output:', errorOutput);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Video conversion failed', details: errorOutput });
+      }
     }
   });
-  ff.on('error', (e) => {
-    console.error('ffmpeg error', e);
-    if (!res.headersSent) res.status(500);
-    try { res.end(); } catch(_) {}
+
+  ff.on('error', (err) => {
+    console.error('FFmpeg process error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'FFmpeg process failed', details: err.message });
+    }
   });
 
-  // אם הלקוח סגר — נסגור את ffmpeg
+  // ניקוי כשהלקוח מתנתק
   res.on('close', () => {
-    try { ff.kill('SIGKILL'); } catch(_) {}
+    console.log('Client disconnected, killing FFmpeg process');
+    ff.kill('SIGTERM');
+    setTimeout(() => {
+      ff.kill('SIGKILL');
+    }, 5000);
   });
 }
+
+// פונקציה חלופית - המרה דרך temp file (אם הסטרימינג לא עובד)
+async function transcodeToTempMp4(aviUrl, outFileName, res) {
+  const tempDir = require('os').tmpdir();
+  const path = require('path');
+  const fs = require('fs').promises;
+  
+  const tempInput = path.join(tempDir, `temp_input_${Date.now()}.avi`);
+  const tempOutput = path.join(tempDir, `temp_output_${Date.now()}.mp4`);
+
+  try {
+    // הורד את הקובץ המקור לtemp
+    console.log('Downloading source file...');
+    const response = await fetch(aviUrl);
+    if (!response.ok) throw new Error('Failed to fetch source');
+    
+    const buffer = await response.buffer();
+    await fs.writeFile(tempInput, buffer);
+    console.log('Source downloaded to temp:', tempInput);
+
+    // המר באמצעות ffmpeg
+    const args = [
+      '-hide_banner',
+      '-loglevel', 'info',
+      '-i', tempInput,
+      '-c:v', 'libx264',
+      '-preset', 'fast',
+      '-crf', '23',
+      '-pix_fmt', 'yuv420p',
+      '-profile:v', 'baseline',
+      '-level', '3.0',
+      '-movflags', '+faststart',
+      '-an',
+      '-y',
+      tempOutput
+    ];
+
+    console.log('Running FFmpeg conversion...');
+    
+    const ff = spawn(ffmpegPath, args);
+    
+    ff.stderr.on('data', (data) => {
+      console.log('FFmpeg:', data.toString());
+    });
+
+    await new Promise((resolve, reject) => {
+      ff.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg exited with code ${code}`));
+      });
+      ff.on('error', reject);
+    });
+
+    // שלח את הקובץ המומר
+    const convertedBuffer = await fs.readFile(tempOutput);
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
+    res.setHeader('Content-Length', convertedBuffer.length);
+    res.send(convertedBuffer);
+
+    // נקה temp files
+    await fs.unlink(tempInput).catch(() => {});
+    await fs.unlink(tempOutput).catch(() => {});
+
+  } catch (err) {
+    console.error('Temp conversion error:', err);
+    
+    // נקה temp files במקרה של שגיאה
+    await fs.unlink(tempInput).catch(() => {});
+    await fs.unlink(tempOutput).catch(() => {});
+    
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+}
+
+// endpoints משופרים
+router.get('/stream/by-measurement/:measurementId.mp4', async (req, res) => {
+  try {
+    const measurementId = parseInt(req.params.measurementId);
+    const useTemp = req.query.temp === 'true'; // להוסיף ?temp=true לבדיקה
+    
+    const pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('device_measurement_id', sql.Int, measurementId)
+      .query(`
+        SELECT TOP 1 file_name, uploaded_at
+        FROM patient_videos
+        WHERE device_measurement_id = @device_measurement_id
+        ORDER BY uploaded_at DESC, id DESC
+      `);
+      
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'No video found' });
+    }
+
+    const { file_name } = result.recordset[0];
+    const aviUrl = await getReadSasForBlob(file_name, 3600);
+    const outName = file_name.replace(/\.avi$/i, '.mp4');
+    
+    console.log('Processing video:', { file_name, aviUrl: aviUrl.substring(0, 100) + '...' });
+    
+    if (useTemp) {
+      await transcodeToTempMp4(aviUrl, outName, res);
+    } else {
+      await transcodeUrlToMp4Stream(aviUrl, outName, res);
+    }
+    
+  } catch (err) {
+    console.error('Stream by-measurement error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Internal error' });
+    }
+  }
+});
+
+router.get('/stream/by-time.mp4', async (req, res) => {
+  try {
+    const patientId = parseInt(req.query.patientId);
+    const t = new Date(req.query.t);
+    const windowSec = parseInt(req.query.windowSec || '900');
+    const useTemp = req.query.temp === 'true';
+    
+    if (!patientId || isNaN(t.getTime())) {
+      return res.status(400).json({ error: 'patientId/t required' });
+    }
+    
+    const tMin = new Date(t.getTime() - windowSec * 1000);
+    const tMax = new Date(t.getTime() + windowSec * 1000);
+
+    const pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('patient_id', sql.Int, patientId)
+      .input('tMin', sql.DateTime2, tMin)
+      .input('tMax', sql.DateTime2, tMax)
+      .input('t', sql.DateTime2, t)
+      .query(`
+        SELECT TOP 1 file_name, uploaded_at
+        FROM patient_videos
+        WHERE patient_id = @patient_id
+          AND uploaded_at BETWEEN @tMin AND @tMax
+        ORDER BY ABS(DATEDIFF(SECOND, uploaded_at, @t)) ASC, uploaded_at DESC, id DESC
+      `);
+      
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'No video near that time' });
+    }
+
+    const { file_name } = result.recordset[0];
+    const aviUrl = await getReadSasForBlob(file_name, 3600);
+    const outName = file_name.replace(/\.avi$/i, '.mp4');
+    
+    if (useTemp) {
+      await transcodeToTempMp4(aviUrl, outName, res);
+    } else {
+      await transcodeUrlToMp4Stream(aviUrl, outName, res);
+    }
+    
+  } catch (err) {
+    console.error('Stream by-time error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Internal error' });
+    }
+  }
+});
+
 
 // =====================
 //  A) STREAM BY MEASUREMENT → MP4
