@@ -142,32 +142,44 @@ async function transcodeUrlToMp4Stream(sourceUrl, outFileName, res) {
   res.flushHeaders();
 
   const args = [
-    '-hide_banner',
-    '-loglevel', 'info',
-    '-nostdin',
-    // חיבור יציב ל-HTTPS (Azure Blob) במקרה של ניתוק זמני
-    '-reconnect', '1',
-    '-reconnect_streamed', '1',
-    '-reconnect_at_eof', '1',
-    '-reconnect_delay_max', '2',
-    // קלט
-    '-i', sourceUrl,
-    // וידאו: H.264 + פרגמנטציה לניגון תוך כדי הורדה
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-tune', 'zerolatency',
-    '-crf', '28',
-    '-pix_fmt', 'yuv420p',
-    '-profile:v', 'baseline',
-    '-level', '3.0',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-    // בלי אודיו (אם תרצי אודיו הורידי את -an והוסיפי קידוד אודיו)
-    '-an',
-    // פלט לצינור HTTP
-    '-f', 'mp4',
-    '-y',
-    'pipe:1'
-  ];
+  '-hide_banner',
+  '-loglevel', 'info',
+  '-nostdin',
+
+  // חיבור יציב ל-HTTPS (Azure Blob)
+  '-reconnect', '1',
+  '-reconnect_streamed', '1',
+  '-reconnect_at_eof', '1',
+  '-reconnect_delay_max', '2',
+
+  // קלט
+  '-i', sourceUrl,
+
+  // ✅ תיקון רוחב/גובה לא זוגיים
+  '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+
+  // ✅ קידוד וידאו
+  '-c:v', 'libx264',
+  '-preset', 'veryfast',
+  '-tune', 'zerolatency',
+  '-crf', '23',
+  '-pix_fmt', 'yuv420p',
+  '-profile:v', 'baseline',
+  '-level', '3.0',
+
+  // ✅ הוספת קידוד אודיו (AAC במקום -an)
+  '-c:a', 'aac',
+  '-b:a', '96k',
+
+  // ✅ ניגון תוך כדי סטרימינג
+  '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+
+  // פלט ישיר ל־pipe
+  '-f', 'mp4',
+  '-y',
+  'pipe:1'
+];
+
 
   const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   let errBuf = '';
