@@ -392,7 +392,7 @@ router.get('/stream/by-file/:encodedFileName.mp4', async (req, res) => {
 });
 
 // ---------- STREAM: concat by measurement → MP4 ----------
-router.get('/stream/concat/by-measurement/:measurementId.mp4', async (req, res) => {
+router.get('/stream/by-measurement/:measurementId.mp4', async (req, res) => {
   try {
     const measurementId = parseInt(req.params.measurementId);
     const rows = await getAllByMeasurement(measurementId);
@@ -416,7 +416,7 @@ router.get('/stream/concat/by-measurement/:measurementId.mp4', async (req, res) 
 });
 
 // ---------- STREAM: concat by time → MP4 ----------
-router.get('/stream/concat/by-time.mp4', async (req, res) => {
+router.get('/stream/by-time.mp4', async (req, res) => {
   try {
     const patientId = parseInt(req.query.patientId);
     const t = new Date(req.query.t);
