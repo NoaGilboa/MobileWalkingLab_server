@@ -134,33 +134,37 @@ async function getAllSegmentsForSameSessionIfAny(row) {
 
 // ---------- FFmpeg streaming: single URL ----------
 async function transcodeUrlToMp4Stream(sourceUrl, outFileName, res) {
+  // כותרות לתמיכה בניגון דפדפנים
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
-
-  try {
-    const head = await fetch(sourceUrl, { method: 'HEAD' });
-    if (!head.ok) {
-      return res.status(502).json({ error: 'Source video not accessible' });
-    }
-  } catch (e) {
-    return res.status(502).json({ error: 'Cannot access source video' });
-  }
+  res.flushHeaders();
 
   const args = [
     '-hide_banner',
     '-loglevel', 'info',
+    '-nostdin',
+    // חיבור יציב ל-HTTPS (Azure Blob) במקרה של ניתוק זמני
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_at_eof', '1',
+    '-reconnect_delay_max', '2',
+    // קלט
     '-i', sourceUrl,
+    // וידאו: H.264 + פרגמנטציה לניגון תוך כדי הורדה
     '-c:v', 'libx264',
-    '-preset', 'ultrafast',
+    '-preset', 'veryfast',
+    '-tune', 'zerolatency',
     '-crf', '28',
     '-pix_fmt', 'yuv420p',
     '-profile:v', 'baseline',
     '-level', '3.0',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-    '-f', 'mp4',
+    // בלי אודיו (אם תרצי אודיו הורידי את -an והוסיפי קידוד אודיו)
     '-an',
+    // פלט לצינור HTTP
+    '-f', 'mp4',
     '-y',
     'pipe:1'
   ];
@@ -169,17 +173,28 @@ async function transcodeUrlToMp4Stream(sourceUrl, outFileName, res) {
   let errBuf = '';
 
   ff.stderr.on('data', d => { errBuf += d.toString(); });
+
+  // מזרים ישירות ל-response
   ff.stdout.pipe(res);
 
-  const kill = () => { try { ff.kill('SIGTERM'); } catch (_) {} setTimeout(() => { try { ff.kill('SIGKILL'); } catch(_){} }, 5000); };
+  const kill = () => {
+    try { ff.kill('SIGTERM'); } catch (_) {}
+    setTimeout(() => { try { ff.kill('SIGKILL'); } catch(_){} }, 5000);
+  };
   res.on('close', kill);
 
   ff.on('error', (e) => {
+    console.error('FFmpeg spawn error:', e);
     if (!res.headersSent) res.status(500).json({ error: 'FFmpeg process failed', details: e.message });
   });
+
   ff.on('close', (code) => {
-    if (code !== 0 && !res.headersSent) {
-      res.status(500).json({ error: 'Video conversion failed', details: errBuf });
+    if (code !== 0) {
+      console.error('FFmpeg exited with code', code, '\n', errBuf);
+      // אם עוד לא נשלחו בתים ללקוח – נחזיר שגיאה; אחרת פשוט נסגור את החיבור
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Video conversion failed', details: errBuf });
+      }
     }
   });
 }
@@ -194,18 +209,14 @@ async function transcodeMultipleUrlsToMp4Stream(urls, outFileName, res) {
   res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
-
-  // (אופציונלי) בדיקת HEAD לכל URL לוודא נגישות
-  try {
-    const checks = await Promise.all(urls.map(u => fetch(u, { method: 'HEAD' })));
-    const bad = checks.find(r => !r.ok);
-    if (bad) return res.status(502).json({ error: 'One or more segment URLs are not accessible' });
-  } catch (e) {
-    return res.status(502).json({ error: 'Failed to access one or more segment URLs' });
-  }
+  res.flushHeaders();
 
   // בונים את ארגומנטי הקלט (-i לכל מקור)
-  const ffArgs = ['-hide_banner', '-loglevel', 'info'];
+  const ffArgs = [
+    '-hide_banner', '-loglevel', 'info', '-nostdin',
+    '-reconnect', '1', '-reconnect_streamed', '1',
+    '-reconnect_at_eof', '1', '-reconnect_delay_max', '2'
+  ];
   urls.forEach(u => { ffArgs.push('-i', u); });
 
   // בונים filter_complex ל־concat
@@ -251,6 +262,7 @@ async function transcodeMultipleUrlsToMp4Stream(urls, outFileName, res) {
 
 // ---------- Upload video for a patient ----------
 router.post('/:id/upload-video', upload.single('video'), async (req, res) => {
+  await ensureContainer();
   const patientId = parseInt(req.params.id);
   const file = req.file;
   const { device_measurement_id } = req.body;
@@ -305,7 +317,7 @@ router.get('/by-measurement/:measurementId', async (req, res) => {
     // כמה מקטעים → נחזיר URL סטרים מאוחד
     return res.json({
       type: 'merged',
-      combined_stream_url: `/api/video/stream/concat/by-measurement/${measurementId}.mp4`,
+      combined_stream_url: `/api/video/stream/by-measurement/${measurementId}.mp4`,
       count: rows.length
     });
   } catch (err) {
@@ -345,7 +357,7 @@ router.get('/by-time', async (req, res) => {
     // יש כמה מקטעים → סטרימינג מאוחד לפי זמן
     return res.json({
       type: 'merged',
-      combined_stream_url: `/api/video/stream/concat/by-time.mp4?patientId=${patientId}&t=${encodeURIComponent(t.toISOString())}&windowSec=${windowSec}`,
+      combined_stream_url: `/api/video/stream/by-time.mp4?patientId=${patientId}&t=${encodeURIComponent(t.toISOString())}&windowSec=${windowSec}`,
       count: segments.length
     });
 
