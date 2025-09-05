@@ -230,29 +230,21 @@ async function getReadSasForBlob(blobName, ttlSec = 3600) {
   return `${blobClient.url}?${sas}`;
 }
 
-async function transcodeUrlToMp4Stream(aviUrl, outFileName, res) {
+async function transcodeUrlToMp4Stream(aviUrl, outFileName, req, res) {
   console.log('Starting transcode for:', aviUrl);
 
-  res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  // אין לנו תמיכת Range אמיתית במסלול הסטרים:
-  res.setHeader('Accept-Ranges', 'none');
-  res.flushHeaders?.(); // דחיפה מידית של הכותרות (מאחורי פרוקסי זה עוזר)
-
-  // בדיקת נגישות מקור
+  // בדיקת נגישות מקור (HEAD)
   try {
-    const testResponse = await fetch(aviUrl, { method: 'HEAD' });
-    if (!testResponse.ok) {
-      console.error('Source URL not accessible:', testResponse.status);
-      return res.status(502).json({ error: 'Source video not accessible' });
+    const head = await fetch(aviUrl, { method: 'HEAD' });
+    if (!head.ok) {
+      console.error('Source URL not accessible:', head.status);
+      res.status(502).json({ error: 'Source video not accessible' });
+      return false;
     }
-    console.log('Source URL ok, content-length:', testResponse.headers.get('content-length'));
-  } catch (err) {
-    console.error('Error testing source URL:', err);
-    return res.status(502).json({ error: 'Cannot access source video' });
+  } catch (e) {
+    console.error('HEAD error:', e);
+    res.status(502).json({ error: 'Cannot access source video' });
+    return false;
   }
 
   const args = [
@@ -280,176 +272,185 @@ async function transcodeUrlToMp4Stream(aviUrl, outFileName, res) {
   ];
 
   console.log('FFmpeg command:', ffmpegPath, args.join(' '));
-  const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-  let errorOutput = '';
-  let anyBytes = false;
+  return await new Promise((resolve) => {
+    const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-  const earlyBytesTimer = setTimeout(() => {
-    if (!anyBytes) {
-      console.warn('No bytes from ffmpeg within 3s — falling back to temp mode');
-      try { ff.kill('SIGKILL'); } catch (_) {}
-      if (!res.headersSent) {
-        // ניתן גם להחזיר redirect ל-temp=true, אבל עדיף:
-        // נקרא ל-fallback כאן (דורש הפיכת הפונקציה ללקבל aviUrl/outFileName בלבד ולהחזיר Buffer/Stream).
+    let errorOutput = '';
+    let firstChunkSent = false;
+    let responded = false;
+
+    // אם לא הגיעו בתים תוך 3 שניות -> פולבאק
+    const earlyBytesTimer = setTimeout(async () => {
+      if (!firstChunkSent && !responded) {
+        console.warn('No bytes within 3s — using temp fallback');
+        try { ff.kill('SIGKILL'); } catch (_) {}
+        // כאן עוד לא שלחנו כותרות ולא כתבנו ל-res -> אפשר פולבאק
+        responded = true;
+        await transcodeToTempMp4(aviUrl, outFileName, res, req);
+        resolve(true);
       }
-    }
-  }, 3000);
+    }, 3000);
 
-  ff.stderr.on('data', (d) => {
-    const s = d.toString();
-    errorOutput += s;
-    console.log('FFmpeg stderr:', s);
-  });
+    ff.stderr.on('data', (d) => {
+      errorOutput += d.toString();
+      // אפשר להשאיר לוגים… 
+    });
 
-  ff.stdout.on('data', (chunk) => {
-    if (!anyBytes) anyBytes = true;
-    // לא להדפיס כל צ'אנק בפרודקשן; זה כבד
-    // console.log('FFmpeg output chunk:', chunk.length);
-  });
+    ff.stdout.on('data', (chunk) => {
+      if (!firstChunkSent) {
+        firstChunkSent = true;
+        clearTimeout(earlyBytesTimer);
 
-  ff.stdout.pipe(res);
+        // שולחים כותרות רק עכשיו, כשיש לנו צ’אנק ראשון
+        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('Accept-Ranges', 'none');
+        res.flushHeaders?.();
 
-  ff.on('close', (code) => {
-    clearTimeout(earlyBytesTimer);
-    console.log('FFmpeg closed with code:', code);
-    if (code !== 0 && !res.headersSent) {
-      console.error('FFmpeg stderr output:', errorOutput);
-      res.status(500).json({ error: 'Video conversion failed' });
-    }
-  });
+        // כותבים את הצ’אנק הראשון ידנית, ואז מצנרים את השאר
+        res.write(chunk);
+        ff.stdout.pipe(res, { end: true });
+      }
+    });
 
-  ff.on('error', (err) => {
-    clearTimeout(earlyBytesTimer);
-    console.error('FFmpeg process error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'FFmpeg process failed', details: err.message });
-    }
-  });
+    ff.on('close', (code) => {
+      clearTimeout(earlyBytesTimer);
+      if (!responded) {
+        responded = true;
+        if (code === 0) {
+          // סטרים נסגר תקין
+          resolve(true);
+        } else {
+          // אם נכשל לפני שנשלח צ’אנק ראשון — אפשר פולבאק
+          if (!firstChunkSent) {
+            (async () => {
+              try {
+                await transcodeToTempMp4(aviUrl, outFileName, res, req);
+                resolve(true);
+              } catch (e) {
+                if (!res.headersSent) res.status(500).json({ error: 'Video conversion failed' });
+                resolve(false);
+              }
+            })();
+          } else {
+            // כבר כתבנו—החיבור ייסגר, אין מה לעשות
+            resolve(false);
+          }
+        }
+      }
+    });
 
-  res.on('close', () => {
-    console.log('Client disconnected, killing FFmpeg');
-    try { ff.kill('SIGTERM'); } catch (_) {}
-    setTimeout(() => { try { ff.kill('SIGKILL'); } catch (_) {} }, 5000);
+    ff.on('error', async (err) => {
+      clearTimeout(earlyBytesTimer);
+      if (!responded) {
+        responded = true;
+        if (!firstChunkSent) {
+          try {
+            await transcodeToTempMp4(aviUrl, outFileName, res, req);
+            resolve(true);
+          } catch (e) {
+            if (!res.headersSent) res.status(500).json({ error: 'FFmpeg process failed' });
+            resolve(false);
+          }
+        } else {
+          if (!res.headersSent) res.status(500).json({ error: 'FFmpeg process failed', details: err.message });
+          resolve(false);
+        }
+      }
+    });
+
+    res.on('close', () => {
+      try { ff.kill('SIGTERM'); } catch (_) {}
+      setTimeout(() => { try { ff.kill('SIGKILL'); } catch (_) {} }, 5000);
+    });
   });
 }
 
 
 // פונקציה חלופית - המרה דרך temp file (אם הסטרימינג לא עובד)
-async function transcodeToTempMp4(aviUrl, outFileName, res) {
-  const tempDir = require('os').tmpdir();
+async function transcodeToTempMp4(aviUrl, outFileName, res, req) {
+  const os = require('os');
   const path = require('path');
-  const fs = require('fs').promises;
-  
+  const fs = require('fs');
+  const fsp = require('fs').promises;
+
+  const tempDir = os.tmpdir();
   const tempInput = path.join(tempDir, `temp_input_${Date.now()}.avi`);
   const tempOutput = path.join(tempDir, `temp_output_${Date.now()}.mp4`);
 
   try {
-    // הורד את הקובץ המקור לtemp
-    console.log('Downloading source file...');
+    // הורדה
     const response = await fetch(aviUrl);
     if (!response.ok) throw new Error('Failed to fetch source');
-    
-    const buffer = await response.buffer();
-    await fs.writeFile(tempInput, buffer);
-    console.log('Source downloaded to temp:', tempInput);
+    const buffer = await response.arrayBuffer();
+    await fsp.writeFile(tempInput, Buffer.from(buffer));
 
-    // המר באמצעות ffmpeg
+    // המרה
     const args = [
-      '-hide_banner',
-      '-loglevel', 'info',
+      '-hide_banner', '-loglevel', 'info',
       '-i', tempInput,
-      '-c:v', 'libx264',
-      '-preset', 'fast',
-      '-crf', '23',
-      '-pix_fmt', 'yuv420p',
-      '-profile:v', 'baseline',
-      '-level', '3.0',
-      '-movflags', '+faststart',
-      '-an',
-      '-y',
-      tempOutput
+      '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+      '-pix_fmt', 'yuv420p', '-profile:v', 'baseline', '-level', '3.0',
+      '-movflags', '+faststart', // חשוב ל-Seek
+      '-an', '-y', tempOutput
     ];
-
-    console.log('Running FFmpeg conversion...');
-    
-    const ff = spawn(ffmpegPath, args);
-    
-    ff.stderr.on('data', (data) => {
-      console.log('FFmpeg:', data.toString());
-    });
-
     await new Promise((resolve, reject) => {
-      ff.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`FFmpeg exited with code ${code}`));
-      });
+      const ff = spawn(ffmpegPath, args);
+      ff.stderr.on('data', d => console.log('FFmpeg:', d.toString()));
+      ff.on('close', c => c === 0 ? resolve() : reject(new Error(`FFmpeg exited ${c}`)));
       ff.on('error', reject);
     });
 
-    // שלח את הקובץ המומר
-    const convertedBuffer = await fs.readFile(tempOutput);
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
-    res.setHeader('Content-Length', convertedBuffer.length);
-    res.send(convertedBuffer);
+    // שליחה עם Range
+    const stat = fs.statSync(tempOutput);
+    const total = stat.size;
+    const range = req.headers.range;
 
-    // נקה temp files
-    await fs.unlink(tempInput).catch(() => {});
-    await fs.unlink(tempOutput).catch(() => {});
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-store');
+
+    if (range) {
+      const m = range.match(/bytes=(\d+)-(\d*)/);
+      const start = parseInt(m[1], 10);
+      const end = m[2] ? parseInt(m[2], 10) : total - 1;
+      const chunk = (end - start) + 1;
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${total}`,
+        'Content-Length': chunk,
+        'Content-Type': 'video/mp4',
+        'Content-Disposition': `inline; filename="${outFileName}"`
+      });
+      fs.createReadStream(tempOutput, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, {
+        'Content-Length': total,
+        'Content-Type': 'video/mp4',
+        'Content-Disposition': `inline; filename="${outFileName}"`
+      });
+      fs.createReadStream(tempOutput).pipe(res);
+    }
+
+    // ניקוי אחרי שנשלח
+    res.on('finish', async () => {
+      await fsp.unlink(tempInput).catch(() => {});
+      await fsp.unlink(tempOutput).catch(() => {});
+    });
 
   } catch (err) {
     console.error('Temp conversion error:', err);
-    
-    // נקה temp files במקרה של שגיאה
-    await fs.unlink(tempInput).catch(() => {});
-    await fs.unlink(tempOutput).catch(() => {});
-    
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message });
-    }
+    await fsp.unlink(tempInput).catch(() => {});
+    await fsp.unlink(tempOutput).catch(() => {});
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    throw err;
   }
 }
-
-// endpoints משופרים
-router.get('/stream/by-measurement/:measurementId.mp4', async (req, res) => {
-  try {
-    const measurementId = parseInt(req.params.measurementId);
-    const useTemp = req.query.temp === 'true'; // להוסיף ?temp=true לבדיקה
-    
-    const pool = await sql.connect(dbConfig);
-    const result = await pool.request()
-      .input('device_measurement_id', sql.Int, measurementId)
-      .query(`
-        SELECT TOP 1 file_name, uploaded_at
-        FROM patient_videos
-        WHERE device_measurement_id = @device_measurement_id
-        ORDER BY uploaded_at DESC, id DESC
-      `);
-      
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'No video found' });
-    }
-
-    const { file_name } = result.recordset[0];
-    const aviUrl = await getReadSasForBlob(file_name, 3600);
-    const outName = file_name.replace(/\.avi$/i, '.mp4');
-    
-    console.log('Processing video:', { file_name, aviUrl: aviUrl.substring(0, 100) + '...' });
-    
-    if (useTemp) {
-      await transcodeToTempMp4(aviUrl, outName, res);
-    } else {
-      await transcodeUrlToMp4Stream(aviUrl, outName, res);
-    }
-    
-  } catch (err) {
-    console.error('Stream by-measurement error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message || 'Internal error' });
-    }
-  }
-});
 
 router.get('/stream/by-time.mp4', async (req, res) => {
   try {
@@ -457,16 +458,13 @@ router.get('/stream/by-time.mp4', async (req, res) => {
     const t = new Date(req.query.t);
     const windowSec = parseInt(req.query.windowSec || '900');
     const useTemp = req.query.temp === 'true';
-    
-    if (!patientId || isNaN(t.getTime())) {
-      return res.status(400).json({ error: 'patientId/t required' });
-    }
-    
+    if (!patientId || isNaN(t.getTime())) return res.status(400).json({ error: 'patientId/t required' });
+
     const tMin = new Date(t.getTime() - windowSec * 1000);
     const tMax = new Date(t.getTime() + windowSec * 1000);
 
     const pool = await sql.connect(dbConfig);
-    const result = await pool.request()
+    const { recordset } = await pool.request()
       .input('patient_id', sql.Int, patientId)
       .input('tMin', sql.DateTime2, tMin)
       .input('tMax', sql.DateTime2, tMax)
@@ -478,27 +476,51 @@ router.get('/stream/by-time.mp4', async (req, res) => {
           AND uploaded_at BETWEEN @tMin AND @tMax
         ORDER BY ABS(DATEDIFF(SECOND, uploaded_at, @t)) ASC, uploaded_at DESC, id DESC
       `);
-      
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'No video near that time' });
-    }
 
-    const { file_name } = result.recordset[0];
+    if (recordset.length === 0) return res.status(404).json({ error: 'No video near that time' });
+
+    const { file_name } = recordset[0];
     const aviUrl = await getReadSasForBlob(file_name, 3600);
     const outName = file_name.replace(/\.avi$/i, '.mp4');
-    
-    if (useTemp) {
-      await transcodeToTempMp4(aviUrl, outName, res);
-    } else {
-      await transcodeUrlToMp4Stream(aviUrl, outName, res);
-    }
-    
+
+    if (useTemp) await transcodeToTempMp4(aviUrl, outName, res, req);
+    else await transcodeUrlToMp4Stream(aviUrl, outName, req, res);
+
   } catch (err) {
     console.error('Stream by-time error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message || 'Internal error' });
-    }
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Internal error' });
   }
 });
+
+router.get('/stream/by-measurement/:measurementId.mp4', async (req, res) => {
+  try {
+    const measurementId = parseInt(req.params.measurementId);
+    const useTemp = req.query.temp === 'true';
+
+    const pool = await sql.connect(dbConfig);
+    const { recordset } = await pool.request()
+      .input('device_measurement_id', sql.Int, measurementId)
+      .query(`
+        SELECT TOP 1 file_name, uploaded_at
+        FROM patient_videos
+        WHERE device_measurement_id = @device_measurement_id
+        ORDER BY uploaded_at DESC, id DESC
+      `);
+
+    if (recordset.length === 0) return res.status(404).json({ error: 'No video found' });
+
+    const { file_name } = recordset[0];
+    const aviUrl = await getReadSasForBlob(file_name, 3600);
+    const outName = file_name.replace(/\.avi$/i, '.mp4');
+
+    if (useTemp) await transcodeToTempMp4(aviUrl, outName, res, req);
+    else await transcodeUrlToMp4Stream(aviUrl, outName, req, res);
+
+  } catch (err) {
+    console.error('Stream by-measurement error:', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Internal error' });
+  }
+});
+
 
 module.exports = router;
