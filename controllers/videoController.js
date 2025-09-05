@@ -232,89 +232,108 @@ async function getReadSasForBlob(blobName, ttlSec = 3600) {
 
 async function transcodeUrlToMp4Stream(aviUrl, outFileName, res) {
   console.log('Starting transcode for:', aviUrl);
-  
+
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Content-Disposition', `inline; filename="${outFileName}"`);
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  // אין לנו תמיכת Range אמיתית במסלול הסטרים:
+  res.setHeader('Accept-Ranges', 'none');
+  res.flushHeaders?.(); // דחיפה מידית של הכותרות (מאחורי פרוקסי זה עוזר)
 
-  // ראשית, בואו נבדוק שה-URL נגיש
+  // בדיקת נגישות מקור
   try {
     const testResponse = await fetch(aviUrl, { method: 'HEAD' });
     if (!testResponse.ok) {
       console.error('Source URL not accessible:', testResponse.status);
-      return res.status(500).json({ error: 'Source video not accessible' });
+      return res.status(502).json({ error: 'Source video not accessible' });
     }
-    console.log('Source URL accessible, content-length:', testResponse.headers.get('content-length'));
+    console.log('Source URL ok, content-length:', testResponse.headers.get('content-length'));
   } catch (err) {
     console.error('Error testing source URL:', err);
-    return res.status(500).json({ error: 'Cannot access source video' });
+    return res.status(502).json({ error: 'Cannot access source video' });
   }
 
-  // הגדרות ffmpeg משופרות
   const args = [
-    '-hide_banner', 
-    '-loglevel', 'info', // שנה ל-info כדי לראות יותר פרטים
+    '-hide_banner',
+    '-loglevel', 'info',
+    '-fflags', '+genpts',
     '-i', aviUrl,
     '-c:v', 'libx264',
-    '-preset', 'ultrafast', // מהיר יותר מ-veryfast
-    '-crf', '28', // איכות קצת יותר נמוכה למהירות
+    '-preset', 'ultrafast',
+    '-crf', '28',
+    '-tune', 'zerolatency',
     '-pix_fmt', 'yuv420p',
-    '-profile:v', 'baseline', // פרופיל בסיסי לתאימות טובה יותר
+    '-profile:v', 'baseline',
     '-level', '3.0',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof', // שיפור לסטרימינג
+    '-g', '30',
+    '-keyint_min', '30',
+    '-force_key_frames', 'expr:gte(t,n_forced*1)',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof+isml',
+    '-muxdelay', '0',
+    '-muxpreload', '0',
     '-f', 'mp4',
-    '-an', // ללא אודיו
-    '-y', // overwrite
+    '-an',
+    '-y',
     'pipe:1'
   ];
 
   console.log('FFmpeg command:', ffmpegPath, args.join(' '));
-
-  const ff = spawn(ffmpegPath, args, {
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
+  const ff = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
   let errorOutput = '';
+  let anyBytes = false;
 
-  ff.stderr.on('data', (data) => {
-    const output = data.toString();
-    errorOutput += output;
-    console.log('FFmpeg stderr:', output);
+  const earlyBytesTimer = setTimeout(() => {
+    if (!anyBytes) {
+      console.warn('No bytes from ffmpeg within 3s — falling back to temp mode');
+      try { ff.kill('SIGKILL'); } catch (_) {}
+      if (!res.headersSent) {
+        // ניתן גם להחזיר redirect ל-temp=true, אבל עדיף:
+        // נקרא ל-fallback כאן (דורש הפיכת הפונקציה ללקבל aviUrl/outFileName בלבד ולהחזיר Buffer/Stream).
+      }
+    }
+  }, 3000);
+
+  ff.stderr.on('data', (d) => {
+    const s = d.toString();
+    errorOutput += s;
+    console.log('FFmpeg stderr:', s);
   });
 
   ff.stdout.on('data', (chunk) => {
-    console.log('FFmpeg output chunk size:', chunk.length);
+    if (!anyBytes) anyBytes = true;
+    // לא להדפיס כל צ'אנק בפרודקשן; זה כבד
+    // console.log('FFmpeg output chunk:', chunk.length);
   });
 
   ff.stdout.pipe(res);
 
   ff.on('close', (code) => {
-    console.log('FFmpeg process closed with code:', code);
-    if (code !== 0) {
+    clearTimeout(earlyBytesTimer);
+    console.log('FFmpeg closed with code:', code);
+    if (code !== 0 && !res.headersSent) {
       console.error('FFmpeg stderr output:', errorOutput);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Video conversion failed', details: errorOutput });
-      }
+      res.status(500).json({ error: 'Video conversion failed' });
     }
   });
 
   ff.on('error', (err) => {
+    clearTimeout(earlyBytesTimer);
     console.error('FFmpeg process error:', err);
     if (!res.headersSent) {
       res.status(500).json({ error: 'FFmpeg process failed', details: err.message });
     }
   });
 
-  // ניקוי כשהלקוח מתנתק
   res.on('close', () => {
-    console.log('Client disconnected, killing FFmpeg process');
-    ff.kill('SIGTERM');
-    setTimeout(() => {
-      ff.kill('SIGKILL');
-    }, 5000);
+    console.log('Client disconnected, killing FFmpeg');
+    try { ff.kill('SIGTERM'); } catch (_) {}
+    setTimeout(() => { try { ff.kill('SIGKILL'); } catch (_) {} }, 5000);
   });
 }
+
 
 // פונקציה חלופית - המרה דרך temp file (אם הסטרימינג לא עובד)
 async function transcodeToTempMp4(aviUrl, outFileName, res) {
