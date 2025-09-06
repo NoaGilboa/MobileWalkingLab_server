@@ -32,17 +32,28 @@ The Mobile Walking Lab server acts as the central hub for a comprehensive gait a
 ## 🏗️ System Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Web Client    │────▶│  Node.js Server │◀────│   ESP32 Device  │
-│   (React App)   │     │    (Express)    │     │  (Treadmill)   │
-└─────────────────┘     └────────┬────────┘     └─────────────────┘
-                                 │
-                    ┌────────────┼────────────┐
-                    │            │            │
-            ┌───────▼──────┐ ┌──▼───┐ ┌──────▼──────┐
-            │ Azure SQL DB │ │OpenAI│ │Azure Blob   │
-            │              │ │ API  │ │Storage      │
-            └──────────────┘ └──────┘ └─────────────┘
+┌─────────────────┐      ┌─────────────────┐
+│   Web Client    │ ───▶ │  Node.js Server │
+│   (React App)   │      │    (Express)    │
+└─────────────────┘      └────────┬────────┘
+                                  │
+                     ┌────────────┼──────────────┐
+                     │            │              │
+             ┌───────▼──────┐  ┌──▼───┐   ┌─────▼─────┐
+             │ Azure SQL DB │  │OpenAI│   │ Azure Blob│
+             │   (MSSQL)    │  │ API  │   │  Storage  │
+             └──────────────┘  └──────┘   └───────────┘
+                 ▲    ▲
+                 │    │
+      ┌──────────┘    └───────────┐
+      │                           │
+┌─────┴───────────┐        ┌──────┴──────────────┐
+│ ESP32-S3 Device │        │ ESP32-CAM (XIAO      │
+│ (Sensors)       │        │ ESP32S3 Sense)       │
+│ Speed/Distance, │        │ Video of gait,       │
+│ Hand Pressure,  │        │ polls same command,  │
+│ Foot Lifts      │        │ uploads to Blob      │
+└─────────────────┘        └──────────────────────┘
 ```
 
 ## ✨ Key Features
@@ -77,6 +88,8 @@ The Mobile Walking Lab server acts as the central hub for a comprehensive gait a
 - Hebrew language support for recommendations
 
 ### 5. **Video Management**
+- The system records **walking videos** using the **XIAO ESP32S3 Sense** camera.
+- The camera uses the **same polling command** as the ESP32 sensor device (`start/stop/idle`).
 - Upload patient session videos to Azure Blob Storage
 - Associate videos with device measurements
 - Secure access with SAS token generation
@@ -200,7 +213,7 @@ GET /api/patients/:id/speed-history
 POST /api/patients/:id/treatment-recommendation
 ```
 
-### Device (ESP32) Endpoints
+### Device (ESP32-S3) Endpoints
 
 ```javascript
 // Get current command (polled by ESP32)
@@ -242,18 +255,28 @@ Response: {
 
 ### Video Endpoints
 
-```javascript
-// Upload video
-POST /api/video/:id/upload-video
-Body: FormData with video file
-Optional: device_measurement_id
-
-// Get video by measurement ID
-GET /api/video/by-measurement/:measurementId
-
-// Get all videos for patient
-GET /api/video/:id/videos
+```http
+POST /api/video/:id/upload-video                  # camera uploads here
+GET  /api/video/by-measurement/:measurementId     # retrieve by measurement
+GET  /api/video/:id/videos                        # list patient videos
+GET  /api/video/stream/by-measurement/:id.mp4     # browser-friendly stream
+GET  /api/video/stream/by-time.mp4?patientId=..   # nearest-by-time stream
 ```
+
+## 📷 XIAO ESP32S3 Sense Integration
+
+### Camera Polling & Recording Flow
+1. **Poll command**: `GET /api/device/command` every ~3s  
+2. **On start**: Begin recording, upload via `POST /api/video/:patientId/upload-video`  
+3. **On stop**: Finalize and ensure upload  
+4. **Storage & Metadata**: Files in Azure Blob, metadata in SQL with optional `device_measurement_id`  
+5. **Retrieval**: By measurement or timestamp, with SAS-secured streaming endpoints
+
+### Frontend Behavior
+- Clicking a speed bar in the chart queries `GET /api/video/by-measurement/:measurementId`
+- If not found, fallback to `GET /api/video/by-time?...`
+- Opens a popup with video playback
+
 
 ## 🔌 ESP32 Integration
 
