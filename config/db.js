@@ -133,9 +133,125 @@ async function connectDB() {
         `);
         console.log("Checked and created 'patient_videos' table if not exists");
 
+        // --- defaults & triggers to keep patients.updated_at always fresh ---
+
+        // 0) default constraint to UTC + backfill for nulls
+        await pool.request().query(`
+            IF NOT EXISTS (
+            SELECT 1
+            FROM sys.default_constraints dc
+            JOIN sys.columns c ON c.default_object_id = dc.object_id
+            JOIN sys.tables  t ON t.object_id = c.object_id
+            WHERE t.name = 'patients' AND c.name = 'updated_at'
+            )
+            BEGIN
+            ALTER TABLE dbo.patients
+            ADD CONSTRAINT DF_patients_updated_at_utc DEFAULT (GETUTCDATE()) FOR updated_at;
+            END;
+
+            UPDATE dbo.patients
+            SET updated_at = ISNULL(updated_at, created_at)
+            WHERE updated_at IS NULL;
+            `);
+        console.log("Ensured default & backfilled 'patients.updated_at'");
+
+        // 1) notes -> touch patient
+        await pool.request().query(`
+            CREATE OR ALTER TRIGGER dbo.trg_touch_patient_on_notes
+            ON dbo.patient_notes
+            AFTER INSERT, UPDATE, DELETE
+            AS
+            BEGIN
+            SET NOCOUNT ON;
+
+            ;WITH ids AS (
+                SELECT patient_id FROM inserted
+                UNION
+                SELECT patient_id FROM deleted
+            )
+            UPDATE p
+                SET updated_at = GETUTCDATE()
+            FROM dbo.patients p
+            INNER JOIN (SELECT DISTINCT patient_id FROM ids WHERE patient_id IS NOT NULL) x
+                ON x.patient_id = p.id;
+            END
+            `);
+        console.log("Created trigger: trg_touch_patient_on_notes");
+
+        // 2) manual speeds -> touch patient
+        await pool.request().query(`
+            CREATE OR ALTER TRIGGER dbo.trg_touch_patient_on_manual_speed
+            ON dbo.patient_speed_measurements
+            AFTER INSERT, UPDATE, DELETE
+            AS
+            BEGIN
+            SET NOCOUNT ON;
+
+            ;WITH ids AS (
+                SELECT patient_id FROM inserted
+                UNION
+                SELECT patient_id FROM deleted
+            )
+            UPDATE p
+                SET updated_at = GETUTCDATE()
+            FROM dbo.patients p
+            INNER JOIN (SELECT DISTINCT patient_id FROM ids WHERE patient_id IS NOT NULL) x
+                ON x.patient_id = p.id;
+            END
+            `);
+        console.log("Created trigger: trg_touch_patient_on_manual_speed");
+
+        // 3) device measurements -> touch patient
+        await pool.request().query(`
+            CREATE OR ALTER TRIGGER dbo.trg_touch_patient_on_device_meas
+            ON dbo.device_measurements
+            AFTER INSERT, UPDATE, DELETE
+            AS
+            BEGIN
+            SET NOCOUNT ON;
+
+            ;WITH ids AS (
+                SELECT patient_id FROM inserted
+                UNION
+                SELECT patient_id FROM deleted
+            )
+            UPDATE p
+                SET updated_at = GETUTCDATE()
+            FROM dbo.patients p
+            INNER JOIN (SELECT DISTINCT patient_id FROM ids WHERE patient_id IS NOT NULL) x
+                ON x.patient_id = p.id;
+            END
+            `);
+        console.log("Created trigger: trg_touch_patient_on_device_meas");
+
+        // 4) videos -> touch patient (your schema has patient_id on patient_videos)
+        await pool.request().query(`
+            CREATE OR ALTER TRIGGER dbo.trg_touch_patient_on_videos
+            ON dbo.patient_videos
+            AFTER INSERT, UPDATE, DELETE
+            AS
+            BEGIN
+            SET NOCOUNT ON;
+
+            ;WITH ids AS (
+                SELECT patient_id FROM inserted
+                UNION
+                SELECT patient_id FROM deleted
+            )
+            UPDATE p
+                SET updated_at = GETUTCDATE()
+            FROM dbo.patients p
+            INNER JOIN (SELECT DISTINCT patient_id FROM ids WHERE patient_id IS NOT NULL) x
+                ON x.patient_id = p.id;
+            END
+            `);
+        console.log("Created trigger: trg_touch_patient_on_videos");
+
+
     } catch (err) {
         console.error("Database connection failed:", err);
     }
+
 }
 
 
