@@ -213,7 +213,7 @@ static async getSpeedHistory(patientId) {
     return result.recordset;
 }
 
-static async getAllPatientsPaginated({ page, pageSize, sortBy = 'id', sortDir = 'ASC' }) {
+static async getAllPatientsPaginated({ page, pageSize, sortBy = 'id', sortDir = 'ASC', qName = '', qId = '' }) {
   try {
     const pool = await sql.connect(dbConfig);
 
@@ -221,35 +221,47 @@ static async getAllPatientsPaginated({ page, pageSize, sortBy = 'id', sortDir = 
     const dir = String(sortDir).toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
     const offset = page * pageSize;
 
+    const whereParts = [];
+    const req = pool.request();
+
+    if (qName) {
+        req.input('qName', sql.NVarChar, `%${qName}%`);
+        whereParts.push(`(
+        first_name LIKE @qName OR last_name LIKE @qName OR (first_name + N' ' + last_name) LIKE @qName
+        )`);
+    }
+
+    if (qId) {
+        req.input('qId', sql.NVarChar, `%${qId}%`);
+        whereParts.push(`patient_id LIKE @qId`);
+    }
+
+    const whereSql = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
+
     // סה"כ
-    const totalRes = await pool.request().query(`SELECT COUNT(*) AS cnt FROM patients;`);
+    const totalRes = await req.query(`SELECT COUNT(*) AS cnt FROM patients ${whereSql};`);
     const total = totalRes.recordset[0].cnt;
 
     // אם אין רשומות – החזרה מהירה
     if (!total) {
-      return {
-        data: [],
-        page,
-        pageSize,
-        total: 0,
-        totalPages: 0,
-        hasNext: false,
-        hasPrev: page > 0,
-        sortBy: safeSortBy,
-        sortDir: dir,
-      };
-    }
+    return { data: [], page, pageSize, total: 0, totalPages: 0, hasNext: false, hasPrev: page > 0, sortBy: safeSortBy, sortDir: dir };
+  }
 
     // שימי לב: לא ניתן לפרמטר שם עמודה, לכן משתמשים בלובן ואז ב־template
+    const req2 = pool.request();
+    if (qName) req2.input('qName', sql.NVarChar, `%${qName}%`);
+    if (qId)   req2.input('qId', sql.NVarChar, `%${qId}%`);
+
     const query = `
-      SELECT id, patient_id, first_name, last_name, birth_date, gender, weight, height,
-             phone, email, medical_condition, mobility_status, created_at, updated_at
-      FROM patients
-      ORDER BY ${safeSortBy} ${dir}
-      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
+        SELECT id, patient_id, first_name, last_name, birth_date, gender, weight, height,
+            phone, email, medical_condition, mobility_status, created_at, updated_at
+        FROM patients
+        ${whereSql}
+        ORDER BY ${safeSortBy} ${dir}
+        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
     `;
 
-    const res = await pool.request()
+    const res = await req2
       .input('offset', sql.Int, offset)
       .input('limit', sql.Int, pageSize)
       .query(query);

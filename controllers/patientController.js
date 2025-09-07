@@ -10,7 +10,8 @@ const DeviceService = require('../services/deviceService');
 // Get all patients
 router.get('/', async (req, res) => {
   try {
-    const hasPaging = req.query.page !== undefined || req.query.pageSize !== undefined;
+    const hasPaging = req.query.page !== undefined || req.query.pageSize !== undefined  ||
+                      (req.query.qName || req.query.qId); ;
 
     if (!hasPaging) {
       const patients = await PatientService.getAllPatients();
@@ -23,8 +24,10 @@ router.get('/', async (req, res) => {
       defaultSortBy: 'id',
       defaultSortDir: 'ASC',
     });
+    const qName = (req.query.qName || '').trim();
+    const qId   = (req.query.qId || '').trim();
 
-    const result = await PatientService.getAllPatientsPaginated({ page, pageSize, sortBy, sortDir });
+    const result = await PatientService.getAllPatientsPaginated({ page, pageSize, sortBy, sortDir, qName, qId });
 
     const baseUrl = req.baseUrl || '/api/patients';
     const q = new URLSearchParams({ page: String(page), pageSize: String(pageSize), sortBy, sortDir });
