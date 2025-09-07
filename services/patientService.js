@@ -7,6 +7,14 @@ class PatientService {
         return await PatientDataAccess.getAllPatients();
     }
 
+    /**
+     * @param {{page:number, pageSize:number, sortBy?:string, sortDir?:'ASC'|'DESC'}} opts
+     * @returns {Promise<{data:any[], page:number, pageSize:number, total:number, totalPages:number, hasNext:boolean, hasPrev:boolean, sortBy:string, sortDir:'ASC'|'DESC'}>}
+     */
+    static async getAllPatientsPaginated(opts) {
+        return await PatientDataAccess.getAllPatientsPaginated(opts);
+    }
+
     static async addPatient(patientData) {
         return await PatientDataAccess.addPatient(patientData);
     }
@@ -17,6 +25,15 @@ class PatientService {
 
     static async getNotesByPatientId(patientId) {
         return await PatientDataAccess.getNotesByPatientId(patientId);
+    }
+
+    /**
+     * @param {number} patientId
+     * @param {{page:number, pageSize:number, sortBy?:string, sortDir?:'ASC'|'DESC'}} opts
+     * @returns {Promise<{data:any[], page:number, pageSize:number, total:number, totalPages:number, hasNext:boolean, hasPrev:boolean, sortBy:string, sortDir:'ASC'|'DESC'}>}
+     */
+    static async getNotesByPatientIdPaginated(patientId, opts) {
+        return await PatientDataAccess.getNotesByPatientIdPaginated(patientId, opts);
     }
 
     static async addNoteToPatient(patientId, therapistId, note) {

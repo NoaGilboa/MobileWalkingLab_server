@@ -3,6 +3,15 @@
 const sql = require('mssql');
 const dbConfig = require('../config/db');
 
+const PATIENT_SORT_WHITELIST = new Set(['id', 'patient_id', 'first_name', 'last_name', 'created_at', 'updated_at']);
+const NOTE_SORT_WHITELIST    = new Set(['id', 'created_at', 'updated_at', 'user_id', 'therapist_id']);
+
+function safeSort(sortBy, whitelist, fallback) {
+  if (!sortBy) return fallback;
+  const s = String(sortBy);
+  return whitelist.has(s) ? s : fallback;
+}
+
 class PatientDataAccess {
     // קבלת כל המטופלים
     static async getAllPatients() {
@@ -204,6 +213,123 @@ static async getSpeedHistory(patientId) {
     return result.recordset;
 }
 
+static async getAllPatientsPaginated({ page, pageSize, sortBy = 'id', sortDir = 'ASC' }) {
+  try {
+    const pool = await sql.connect(dbConfig);
+
+    const safeSortBy = safeSort(sortBy, PATIENT_SORT_WHITELIST, 'id');
+    const dir = String(sortDir).toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+    const offset = page * pageSize;
+
+    // סה"כ
+    const totalRes = await pool.request().query(`SELECT COUNT(*) AS cnt FROM patients;`);
+    const total = totalRes.recordset[0].cnt;
+
+    // אם אין רשומות – החזרה מהירה
+    if (!total) {
+      return {
+        data: [],
+        page,
+        pageSize,
+        total: 0,
+        totalPages: 0,
+        hasNext: false,
+        hasPrev: page > 0,
+        sortBy: safeSortBy,
+        sortDir: dir,
+      };
+    }
+
+    // שימי לב: לא ניתן לפרמטר שם עמודה, לכן משתמשים בלובן ואז ב־template
+    const query = `
+      SELECT id, patient_id, first_name, last_name, birth_date, gender, weight, height,
+             phone, email, medical_condition, mobility_status, created_at, updated_at
+      FROM patients
+      ORDER BY ${safeSortBy} ${dir}
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
+    `;
+
+    const res = await pool.request()
+      .input('offset', sql.Int, offset)
+      .input('limit', sql.Int, pageSize)
+      .query(query);
+
+    const totalPages = Math.ceil(total / pageSize);
+
+    return {
+      data: res.recordset,
+      page,
+      pageSize,
+      total,
+      totalPages,
+      hasNext: page + 1 < totalPages,
+      hasPrev: page > 0,
+      sortBy: safeSortBy,
+      sortDir: dir,
+    };
+  } catch (error) {
+    throw new Error(`Error getting patients (paginated): ${error.message}`);
+  }
+}
+
+static async getNotesByPatientIdPaginated(patientId, { page, pageSize, sortBy = 'created_at', sortDir = 'DESC' }) {
+  try {
+    const pool = await sql.connect(dbConfig);
+
+    const safeSortBy = safeSort(sortBy, NOTE_SORT_WHITELIST, 'created_at');
+    const dir = String(sortDir).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const offset = page * pageSize;
+
+    const totalRes = await pool.request()
+      .input('patient_id', sql.Int, patientId)
+      .query(`SELECT COUNT(*) AS cnt FROM patient_notes WHERE patient_id = @patient_id;`);
+    const total = totalRes.recordset[0].cnt;
+
+    if (!total) {
+      return {
+        data: [],
+        page,
+        pageSize,
+        total: 0,
+        totalPages: 0,
+        hasNext: false,
+        hasPrev: page > 0,
+        sortBy: safeSortBy,
+        sortDir: dir,
+      };
+    }
+
+    const query = `
+      SELECT id, patient_id, therapist_id, created_by_name, note, created_at
+      FROM patient_notes
+      WHERE patient_id = @patient_id
+      ORDER BY ${safeSortBy} ${dir}
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
+    `;
+
+    const res = await pool.request()
+      .input('patient_id', sql.Int, patientId)
+      .input('offset', sql.Int, offset)
+      .input('limit', sql.Int, pageSize)
+      .query(query);
+
+    const totalPages = Math.ceil(total / pageSize);
+
+    return {
+      data: res.recordset,
+      page,
+      pageSize,
+      total,
+      totalPages,
+      hasNext: page + 1 < totalPages,
+      hasPrev: page > 0,
+      sortBy: safeSortBy,
+      sortDir: dir,
+    };
+  } catch (error) {
+    throw new Error(`Error retrieving patient notes (paginated): ${error.message}`);
+  }
+}
 
 }
 
