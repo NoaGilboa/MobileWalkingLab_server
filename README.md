@@ -3,20 +3,29 @@
 A comprehensive Node.js/Express backend system for the Mobile Walking Lab, a physiotherapy assessment platform that integrates real-time gait analysis from ESP32 sensors, video recording, and AI-powered treatment recommendations.
 
 ## 📋 Table of Contents
-- [Overview](#overview)
-- [System Architecture](#system-architecture)
-- [Key Features](#key-features)
-- [Technology Stack](#technology-stack)
-- [Project Structure](#project-structure)
-- [API Documentation](#api-documentation)
-- [ESP32 Integration](#esp32-integration)
-- [AI Treatment Recommendations](#ai-treatment-recommendations)
-- [Video Management](#video-management)
-- [Database Schema](#database-schema)
-- [Azure Deployment](#azure-deployment)
-- [Setup & Installation](#setup--installation)
-- [Testing](#testing)
-- [Environment Variables](#environment-variables)
+- [Overview](#-overview)
+- [System Architecture](#-system-architecture)
+- [Key Features](#-key-features)
+- [Technology Stack](#-technology-stack)
+- [Project Structure](#-project-structure)
+- [API Documentation](#-api-documentation)
+- [Pagination & Filtering](#-pagination--filtering)
+- [Debounce & Request Throttling (Frontend)](#-debounce--request-throttling-frontend)
+- [XIAO ESP32S3 Sense Integration](#-xiao-esp32s3-sense-integration)
+- [ESP32 Integration](#-esp32-integration)
+- [AI Treatment Recommendations](#-ai-treatment-recommendations)
+- [Video Management](#-video-management)
+- [Database Schema](#-database-schema)
+- [Azure Deployment](#-azure-deployment)
+- [Setup & Installation](#-setup--installation)
+- [Testing](#-testing)
+- [Environment Variables](#-environment-variables)
+- [Key Implementation Details](#-key-implementation-details)
+- [Client Integration](#-client-integration)
+- [Contributing](#-contributing)
+- [Developer](#-developer)
+- [License](#-license)
+- [Acknowledgments](#-acknowledgments)
 
 ## 🔍 Overview
 
@@ -262,6 +271,162 @@ GET  /api/video/:id/videos                        # list patient videos
 GET  /api/video/stream/by-measurement/:id.mp4     # browser-friendly stream
 GET  /api/video/stream/by-time.mp4?patientId=..   # nearest-by-time stream
 ```
+
+## 🔄 Pagination & Filtering
+
+Both the **patients list** and **patient notes** endpoints support optional, cursor-free pagination. If you **omit** `page` and `pageSize`, the server returns the **full** (non-paginated) result. If you **include** either `page` or `pageSize`, the server returns a **paginated** payload and sets RFC-5988 **Link** headers for easy next/prev navigation.
+
+### Patients – `GET /api/patients`
+**Query parameters**
+
+| Param     | Type   | Default | Notes |
+|-----------|--------|---------|------|
+| `page`    | int    | `0`     | Zero-based page index. If omitted (and `pageSize` omitted) ⇒ non-paginated mode. |
+| `pageSize`| int    | `20`    | Max `100`. If omitted (and `page` omitted) ⇒ non-paginated mode. |
+| `sortBy`  | string | `id`    | Sort column (whitelisted server-side; unsupported values fall back to safe default). |
+| `sortDir` | enum   | `ASC`   | `ASC` \| `DESC`. |
+| `qName`   | string | —       | Optional filter. `LIKE %qName%` on `first_name`, `last_name`, and `"first last"`. |
+| `qId`     | string | —       | Optional filter. `LIKE %qId%` on `patient_id`. |
+
+**Paginated response shape**
+```json
+{
+  "data": [ /* rows */ ],
+  "page": 0,
+  "pageSize": 20,
+  "total": 137,
+  "totalPages": 7,
+  "hasNext": true,
+  "hasPrev": false,
+  "sortBy": "id",
+  "sortDir": "ASC"
+}
+```
+
+**Link header (when applicable)**
+```
+Link: </api/patients?page=1&pageSize=20&sortBy=id&sortDir=ASC>; rel="next",
+      </api/patients?page=0&pageSize=20&sortBy=id&sortDir=ASC>; rel="prev"
+```
+
+**Examples**
+```http
+# Full (non-paginated)
+GET /api/patients
+
+# Paginated + sorted
+GET /api/patients?page=0&pageSize=20&sortBy=last_name&sortDir=ASC
+
+# Search by name or ID with pagination
+GET /api/patients?page=0&pageSize=20&qName=levi
+GET /api/patients?page=0&pageSize=20&qId=1234
+```
+
+### Patient Notes – `GET /api/patients/:id/notes`
+**Query parameters**
+
+| Param     | Type | Default    | Notes |
+|-----------|------|------------|------|
+| `page`    | int  | `0`        | Zero-based page index. |
+| `pageSize`| int  | `20`       | Max `100`. |
+| `sortBy`  | string | `created_at` | Whitelisted; fallback applied if unsupported. |
+| `sortDir` | enum | `DESC`     | `ASC` \| `DESC`. Default `DESC` (newest first). |
+
+**Behavior**
+- **Without** `page`/`pageSize`: returns **full notes** array (or `404` if patient not found).
+- **With** pagination params: returns the **paginated envelope** (see schema above) and **Link** headers.
+
+**Example**
+```http
+GET /api/patients/42/notes?page=1&pageSize=10&sortBy=created_at&sortDir=DESC
+```
+
+**Implementation Notes**
+- Sorting is **whitelisted server-side** (`safeSort(...)`). Unknown columns automatically **fall back** (`patients: id`, `notes: created_at`).
+- `page` is **zero-based**. `pageSize` is clamped to a **max of 100**.
+- Pagination envelope includes `hasNext`/`hasPrev` to aid UI state (disable buttons, etc.).
+
+## ⏳ Debounce & Request Throttling (Frontend)
+
+To keep the server happy and the UI snappy, **debounce** search inputs (`qName`, `qId`) and **cancel in-flight requests** when the user types quickly or changes pages.
+
+**Recommended**
+- Debounce **300–500 ms** for text filters.
+- **Reset page to 0** when filters change.
+- Use `AbortController` to **cancel** the previous fetch.
+- Keep `page`, `pageSize`, `sortBy`, `sortDir`, `qName`, `qId` in React state and reflect them in the query string.
+
+**Example (React)**
+```jsx
+import { useEffect, useRef, useState } from "react";
+
+function usePatients() {
+  const [qName, setQName] = useState("");
+  const [qId, setQId] = useState("");
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
+  const [sortBy, setSortBy] = useState("id");
+  const [sortDir, setSortDir] = useState("ASC");
+  const [result, setResult] = useState({ data: [], total: 0, totalPages: 0 });
+  const [loading, setLoading] = useState(false);
+
+  const abortRef = useRef(null);
+  const debounceRef = useRef(null);
+
+  // Reset pagination when filters change
+  useEffect(() => { setPage(0); }, [qName, qId]);
+
+  useEffect(() => {
+    // Debounce
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      // Cancel previous request
+      if (abortRef.current) abortRef.current.abort();
+      abortRef.current = new AbortController();
+
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+        sortBy,
+        sortDir
+      });
+      if (qName.trim()) params.set("qName", qName.trim());
+      if (qId.trim())   params.set("qId", qId.trim());
+
+      setLoading(true);
+      fetch(`/api/patients?${params.toString()}`, { signal: abortRef.current.signal })
+        .then(async (r) => {
+          const json = await r.json();
+          setResult(json);
+        })
+        .catch((e) => {
+          if (e.name !== "AbortError") console.error(e);
+        })
+        .finally(() => setLoading(false));
+    }, 400); // 400ms debounce
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [qName, qId, page, pageSize, sortBy, sortDir]);
+
+  return {
+    qName, setQName,
+    qId, setQId,
+    page, setPage,
+    pageSize, setPageSize,
+    sortBy, setSortBy,
+    sortDir, setSortDir,
+    result, loading
+  };
+}
+```
+
+**Why this matters**
+- Prevents **request storms** while typing.
+- Keeps UI responsive; users see results that match their **final** intent.
+- Plays nicely with the server’s **Link** headers and the pagination envelope (`hasNext`, `hasPrev`).
+
 
 ## 📷 XIAO ESP32S3 Sense Integration
 
