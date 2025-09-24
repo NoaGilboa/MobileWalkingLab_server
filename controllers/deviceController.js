@@ -11,6 +11,7 @@ const DeviceService = require('../services/deviceService');
 
 router.get('/command', (req, res) => {
   res.json({ command: currentCommand });
+  console.log(`[REQ] ${req.method} ${req.originalUrl} headers-user-agent=${req.headers['user-agent']}`);
 });
 
 router.post('/command', (req, res) => {
